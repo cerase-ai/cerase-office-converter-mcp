@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "namespace": "studio.guidance",
+  "name": "cerase-office-converter",
+  "type": "connector",
+  "display_name": "Cerase Office Converter",
+  "description": "Convert documents between formats (DOCX, PDF, Markdown, and more).",
+  "license": "MIT",
+  "install": {
+    "image": "ghcr.io/cerase-ai/cerase-office-converter-mcp:latest"
+  },
+  "auth": {
+    "kind": "none",
+    "credential_scope": "tenant"
+  }
+}

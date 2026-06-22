@@ -1,0 +1,19 @@
+# M-INFRA-HYGIENE-1 — keep the build context lean: never ship VCS
+# metadata, byte-code caches, tool caches or tests into the image layer
+# or the build cache. Build inputs (requirements*.txt/.lock, *.py
+# sources, docker/, config yaml) are deliberately NOT excluded.
+.git/
+.gitignore
+.dockerignore
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+test_*.py
+*_test.py
+conftest.py
+README.md

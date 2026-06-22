@@ -1,0 +1,6 @@
+# cerase-office-converter MCP — Python dependency lock (OPT-15).
+#
+# Versions chosen to match what the Dockerfile previously installed
+# unpinned + the existing version ranges declared inline.
+mcp>=1.0,<2.0
+mcp-proxy>=0.3,<1.0
