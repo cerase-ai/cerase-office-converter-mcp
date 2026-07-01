@@ -1,0 +1,22 @@
+# M-PKG-PUBLISH-MIGRATION-1: this package repo self-manages its deps now — the
+# pip entry left cerase-core when the source moved here. Grouped + limit 1 keeps
+# Actions spend low (one PR per ecosystem per week, M-CI-COST drive).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 1
+    labels: [deps, python]
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 1
+    labels: [deps, ci]
+    groups:
+      actions:
+        patterns: ["*"]

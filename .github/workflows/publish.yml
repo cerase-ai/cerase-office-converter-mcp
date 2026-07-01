@@ -27,7 +27,43 @@ env:
   IMAGE: cerase-office-converter-mcp
 
 jobs:
+  # Cheap grep-only gate: the runtime-spawned MCP containers have no compose
+  # healthcheck and run as an unprivileged uid, so the image MUST declare a
+  # non-root USER, a pinned base (reproducible builds), and a HEALTHCHECK
+  # (the only liveness signal doctor/`docker ps` see). Fails the build early.
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Dockerfile hygiene (non-root USER, pinned base, HEALTHCHECK)
+        run: |
+          set -euo pipefail
+          df=Dockerfile
+
+          user_line=$(grep -E '^USER ' "$df" | tail -n1 || true)
+          if [ -z "$user_line" ]; then
+            echo "::error file=$df::no USER instruction — image would run as root"; exit 1
+          fi
+          user=$(echo "$user_line" | awk '{print $2}')
+          if [ "$user" = root ] || [ "$user" = 0 ]; then
+            echo "::error file=$df::USER is root ($user)"; exit 1
+          fi
+          echo "OK: non-root USER=$user"
+
+          from_line=$(grep -E '^FROM ' "$df" | tail -n1 || true)
+          if ! echo "$from_line" | grep -Eq '@sha256:[0-9a-f]{64}|:[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error file=$df::base image not pinned to MAJOR.MINOR.PATCH or @sha256: $from_line"; exit 1
+          fi
+          echo "OK: pinned base — $from_line"
+
+          if ! grep -Eq '^HEALTHCHECK ' "$df"; then
+            echo "::error file=$df::no HEALTHCHECK instruction"; exit 1
+          fi
+          echo "OK: HEALTHCHECK present"
+
   build-and-push:
+    needs: [hygiene]
     runs-on: ubuntu-latest
     permissions:
       contents: read
