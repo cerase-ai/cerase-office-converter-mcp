@@ -63,7 +63,7 @@ def _safe_local_path(path: str) -> str:
     return resolved
 
 
-def _load_workspace_bytes(agent_id: str | None, path: str) -> bytes:
+def _load_workspace_bytes(agent_id: str | None, path: str, binding: str = "") -> bytes:
     """Read a workspace file's CONTENT. Try a local mount first (dev/test where
     CERASE_TOOL_WORKSPACE_ROOT IS the agent's workspace), then fall back to the
     control-plane internal API (it owns workspace access via docker exec) scoped
@@ -85,15 +85,22 @@ def _load_workspace_bytes(agent_id: str | None, path: str) -> bytes:
             "configured (agent_id / CERASE_CONTROL_PLANE_URL / CERASE_INTERNAL_SECRET)"
         )
     qs = urlencode({"path": path})
+    # M-SEC-TOKEN-BINDING-1: the broker requires the calling agent's binding
+    # (gateway-injected tool arg) besides the shared bearer.
+    headers = {"Authorization": f"Bearer {secret}"}
+    if binding:
+        headers["X-Cerase-Agent-Binding"] = binding
     req = urllib.request.Request(
         f"{cp}/api/internal/workspace-file/{agent_id}?{qs}",
-        headers={"Authorization": f"Bearer {secret}"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 — internal API
         return r.read()
 
 
-def _write_workspace_file(agent_id: str | None, path: str, data: bytes) -> bool:
+def _write_workspace_file(
+    agent_id: str | None, path: str, data: bytes, binding: str = ""
+) -> bool:
     """Write a produced artifact back into the calling agent's workspace via the
     control-plane broker (this runner mounts no agent volume). The control-plane
     owns workspace access (docker exec), scopes the write to (agent_id, path),
@@ -105,25 +112,30 @@ def _write_workspace_file(agent_id: str | None, path: str, data: bytes) -> bool:
     if not agent_id or not cp or not secret:
         return False
     qs = urlencode({"path": path})
+    headers = {
+        "Authorization": f"Bearer {secret}",
+        "Content-Type": "application/octet-stream",
+    }
+    if binding:
+        headers["X-Cerase-Agent-Binding"] = binding
     req = urllib.request.Request(
         f"{cp}/api/internal/workspace-file/{agent_id}?{qs}",
         data=data,
         method="PUT",
-        headers={
-            "Authorization": f"Bearer {secret}",
-            "Content-Type": "application/octet-stream",
-        },
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 — internal API
         return 200 <= r.status < 300
 
 
-def _resolve_input_bytes(input_b64: str | None, path: str | None, agent_id: str | None) -> bytes:
+def _resolve_input_bytes(
+    input_b64: str | None, path: str | None, agent_id: str | None, binding: str = ""
+) -> bytes:
     """Exactly one of `input_b64` (inline) / `path` (a workspace file)."""
     if bool(input_b64) == bool(path):
         raise ValueError("provide exactly one of `input_b64` or `path`")
     if path:
-        return _load_workspace_bytes(agent_id, path)
+        return _load_workspace_bytes(agent_id, path, binding)
     return base64.b64decode(input_b64 or "")
 
 
@@ -131,6 +143,7 @@ def _resolve_reference_doc_bytes(
     reference_doc_b64: str | None,
     reference_doc_path: str | None,
     agent_id: str | None,
+    binding: str = "",
 ) -> bytes | None:
     """Optional pandoc reference doc (a template document to style the output).
     Returns None when neither is given; otherwise AT MOST one of
@@ -142,7 +155,7 @@ def _resolve_reference_doc_bytes(
             "provide at most one of `reference_doc_b64` or `reference_doc_path`"
         )
     if reference_doc_path:
-        return _load_workspace_bytes(agent_id, reference_doc_path)
+        return _load_workspace_bytes(agent_id, reference_doc_path, binding)
     if reference_doc_b64:
         return base64.b64decode(reference_doc_b64)
     return None
@@ -228,14 +241,15 @@ def _do_conversion(
     output_filename: str | None = None,
     reference_doc_b64: str | None = None,
     reference_doc_path: str | None = None,
+    agent_binding: str = "",
 ) -> dict:
     work = tempfile.mkdtemp(prefix="cerase-office-", dir="/tmp")
     try:
         in_path = os.path.join(work, f"input.{source_ext}")
         with open(in_path, "wb") as f:
-            f.write(_resolve_input_bytes(input_b64, path, agent_id))
+            f.write(_resolve_input_bytes(input_b64, path, agent_id, agent_binding))
         ref_bytes = _resolve_reference_doc_bytes(
-            reference_doc_b64, reference_doc_path, agent_id
+            reference_doc_b64, reference_doc_path, agent_id, agent_binding
         )
         # Pandoc handles markdown-input cases; everything else routes
         # through LibreOffice for higher fidelity binary↔ODF.
@@ -266,7 +280,7 @@ def _do_conversion(
         # Mirror deck-renderer: write back via the broker, return a {path}
         # handle; fall back to base64 for a dev / non-agent caller.
         rel = f"outputs/{filename}"
-        if _write_workspace_file(agent_id, rel, out_bytes):
+        if _write_workspace_file(agent_id, rel, out_bytes, agent_binding):
             return {"path": rel, "filename": filename, "size_bytes": len(out_bytes)}
         return {
             "filename": filename,
@@ -284,86 +298,87 @@ def _do_conversion(
 # document) by value (`reference_doc_b64`) or by reference (`reference_doc_path`).
 def _convert_tool(
     source_ext, target_format, input_b64, path, agent_id, output_filename,
-    reference_doc_b64=None, reference_doc_path=None,
+    reference_doc_b64=None, reference_doc_path=None, agent_binding="",
 ):
     return _do_conversion(
         source_ext, target_format,
         input_b64=input_b64, path=path, agent_id=agent_id, output_filename=output_filename,
         reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path,
+        agent_binding=agent_binding,
     )
 
 
 # ─── Specific tool pairs ─────────────────────────────────────────
 
 @mcp.tool()
-def convert_docx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_docx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert a Word .docx → PDF. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("docx", "pdf", input_b64, path, agent_id, output_filename)
+    return _convert_tool("docx", "pdf", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_docx_to_odt(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_docx_to_odt(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert a Word .docx → LibreOffice .odt. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("docx", "odt", input_b64, path, agent_id, output_filename)
+    return _convert_tool("docx", "odt", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_odt_to_docx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_odt_to_docx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert a LibreOffice .odt → Word .docx. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("odt", "docx", input_b64, path, agent_id, output_filename)
+    return _convert_tool("odt", "docx", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_pptx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_pptx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert a PowerPoint .pptx → PDF. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("pptx", "pdf", input_b64, path, agent_id, output_filename)
+    return _convert_tool("pptx", "pdf", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_pptx_to_odp(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_pptx_to_odp(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert a PowerPoint .pptx → LibreOffice .odp. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("pptx", "odp", input_b64, path, agent_id, output_filename)
+    return _convert_tool("pptx", "odp", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_odp_to_pptx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_odp_to_pptx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert a LibreOffice .odp → PowerPoint .pptx. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("odp", "pptx", input_b64, path, agent_id, output_filename)
+    return _convert_tool("odp", "pptx", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_xlsx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_xlsx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert an Excel .xlsx → PDF. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("xlsx", "pdf", input_b64, path, agent_id, output_filename)
+    return _convert_tool("xlsx", "pdf", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_xlsx_to_ods(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_xlsx_to_ods(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert an Excel .xlsx → LibreOffice .ods. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("xlsx", "ods", input_b64, path, agent_id, output_filename)
+    return _convert_tool("xlsx", "ods", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_ods_to_xlsx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_ods_to_xlsx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert a LibreOffice .ods → Excel .xlsx. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("ods", "xlsx", input_b64, path, agent_id, output_filename)
+    return _convert_tool("ods", "xlsx", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_md_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None) -> dict:
+def convert_md_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
     """Convert plain markdown → PDF via pandoc + xelatex. Provide `input_b64` OR a workspace `path`."""
-    return _convert_tool("md", "pdf", input_b64, path, agent_id, output_filename)
+    return _convert_tool("md", "pdf", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
-def convert_md_to_docx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, reference_doc_b64: str | None = None, reference_doc_path: str | None = None) -> dict:
+def convert_md_to_docx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, reference_doc_b64: str | None = None, reference_doc_path: str | None = None, agent_binding: str = "") -> dict:
     """Convert plain markdown → Word .docx via pandoc. Provide `input_b64` OR a workspace `path`.
 
     Optionally style the .docx from a template document (pandoc --reference-doc):
     pass it by value as `reference_doc_b64` (inline base64 of a .docx) OR by
     reference as `reference_doc_path` (a workspace file — use this for templates
     too big to inline, e.g. embedded fonts/branding)."""
-    return _convert_tool("md", "docx", input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path)
+    return _convert_tool("md", "docx", input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
 
 
 # ─── Catch-all generic converter ─────────────────────────────────
@@ -378,6 +393,7 @@ def convert(
     output_filename: str | None = None,
     reference_doc_b64: str | None = None,
     reference_doc_path: str | None = None,
+    agent_binding: str = "",
 ) -> dict:
     """Generic conversion catch-all. Use the typed `convert_*_to_*` tools when
     the pair is known; fall back here for less common ones (e.g. rtf → odt,
@@ -391,7 +407,7 @@ def convert(
     base64) OR `reference_doc_path` (a workspace file, for templates too big to
     inline). It does not apply to LibreOffice conversions or to PDF output.
     """
-    return _convert_tool(source_format, target_format, input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path)
+    return _convert_tool(source_format, target_format, input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
 
 
 if __name__ == "__main__":
