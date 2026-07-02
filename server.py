@@ -151,14 +151,24 @@ def _resolve_reference_doc_bytes(
 # ─── Conversion engine ───────────────────────────────────────────
 
 def _soffice_convert(input_path: str, target_format: str, outdir: str) -> str:
-    """Run LibreOffice headless conversion. Returns path to the produced file."""
-    subprocess.run(
+    """Run LibreOffice headless conversion. Returns path to the produced file.
+
+    soffice exits 0 even when a conversion FAILS (e.g. unsupported filter,
+    corrupt input, profile-lock contention), so success cannot be inferred
+    from the exit status. Convert into a dedicated output dir — separate
+    from the dir holding the input — and require a real artifact to appear
+    there: anything found is by construction soffice's product, never the
+    input file echoed back. Fail loud otherwise.
+    """
+    soffice_out = os.path.join(outdir, "soffice-out")
+    os.makedirs(soffice_out, exist_ok=True)
+    proc = subprocess.run(
         [
             SOFFICE,
             "--headless",
             f"-env:UserInstallation=file://{PROFILE_DIR}",
             "--convert-to", target_format,
-            "--outdir", outdir,
+            "--outdir", soffice_out,
             input_path,
         ],
         check=True,
@@ -169,14 +179,21 @@ def _soffice_convert(input_path: str, target_format: str, outdir: str) -> str:
     base = os.path.splitext(os.path.basename(input_path))[0]
     # `--convert-to pdf` produces base.pdf; `--convert-to odt` produces base.odt.
     ext = target_format.split(":")[0]  # `pdf:writer_pdf_Export` → `pdf`
-    produced = os.path.join(outdir, f"{base}.{ext}")
-    if not os.path.exists(produced):
-        # LibreOffice sometimes uses different ext (e.g. ods vs xlsx).
-        for fn in os.listdir(outdir):
-            if fn.startswith(base):
-                produced = os.path.join(outdir, fn)
-                break
-    return produced
+    produced = os.path.join(soffice_out, f"{base}.{ext}")
+    if os.path.isfile(produced):
+        return produced
+    # LibreOffice sometimes uses a different ext (e.g. ods vs xlsx) — any
+    # file in the dedicated output dir is a genuine soffice artifact.
+    for fn in sorted(os.listdir(soffice_out)):
+        candidate = os.path.join(soffice_out, fn)
+        if os.path.isfile(candidate):
+            return candidate
+    stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+    raise RuntimeError(
+        f"LibreOffice produced no output converting {os.path.basename(input_path)!r} "
+        f"to {target_format!r} (soffice exited 0 but wrote nothing)"
+        + (f": {stderr[-500:]}" if stderr else "")
+    )
 
 
 def _pandoc_convert(
