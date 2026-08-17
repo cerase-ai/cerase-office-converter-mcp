@@ -1,0 +1,9 @@
+# Test-only dependencies — never installed into the image (.dockerignore keeps
+# the suite out of the build context).
+#
+# `mcp` is needed because tests/test_server.py imports the server module, which
+# constructs a FastMCP instance at import time. Nothing else from
+# requirements.txt is: LibreOffice, pandoc and the control-plane are all faked,
+# so the suite needs no binaries and no network.
+mcp>=1.0,<2.0
+pytest>=8.0,<9.0

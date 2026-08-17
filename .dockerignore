@@ -15,5 +15,9 @@
 venv/
 test_*.py
 *_test.py
+# A .dockerignore pattern is matched against the whole path, so `test_*.py`
+# alone leaves `tests/test_server.py` in the context.
+tests/
+requirements-dev.txt
 conftest.py
 README.md

@@ -1,7 +1,12 @@
 name: Build & publish Docker image
 
 # Publishes ghcr.io/cerase-ai/cerase-office-converter-mcp from this repo
-# (canonical source). Tagging matches the platform convention:
+# (canonical source). The publish is gated on the tests, which fake LibreOffice,
+# pandoc and the control-plane — no binaries, no network, no docker. The ones
+# that matter assert the `{path}` handle: a converted document that comes back
+# inlined is truncated at 1 MB by the federation and reaches the model corrupt,
+# with the conversion still reported as a success.
+# Tagging matches the platform convention:
 #   - push to main           → main, latest, sha-<short>
 #   - push of a `v*` git tag → vX.Y.Z, X.Y, latest
 #   - pull_request           → build-only validation, no push
@@ -62,8 +67,22 @@ jobs:
           fi
           echo "OK: HEALTHCHECK present"
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install test deps
+        run: pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Tests (LibreOffice, pandoc and the broker faked; the {path} handle is the point)
+        run: python -m pytest tests/ -q
+
   build-and-push:
-    needs: [hygiene]
+    needs: [hygiene, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
