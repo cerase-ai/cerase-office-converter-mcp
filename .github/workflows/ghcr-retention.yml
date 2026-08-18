@@ -4,42 +4,26 @@ name: ghcr-retention
 # image, so the sha- tagged history grows without bound, and a manifest that
 # loses its tag stays behind as an untagged version.
 #
-# This calls the GHCR API directly instead of using
-# actions/delete-package-versions, for two reasons read out of that action's
-# own source rather than guessed at.
+# The pruning itself is `scripts/ghcr-retention.sh`, which cerase-core owns and
+# every repo with a retention workflow carries a byte-identical copy of. The copy
+# here is written by `scripts/sync-tooling.sh` in cerase-core and pinned by
+# `scripts/TOOLING.sha256`; the step below verifies the pin before running the
+# script, so an edited copy stops the run instead of pruning with it. Do not edit
+# the copy — the edit is what the pin exists to catch. Why the script calls the
+# GHCR API rather than actions/delete-package-versions is in its own header.
 #
-# Its ignore-versions pattern is tested against the version NAME, which for a
-# container package is the manifest digest and never a tag. The pattern meant
-# to protect latest, main and the release tags therefore matched nothing: every
-# version was a deletion candidate, and those tags survived only because they
-# ride the newest digest while the action deletes oldest first. Here the
-# protection is read off the TAGS, so it holds wherever a protected tag sits.
-#
-# It also starts every delete in a batch at once and prints a counter that is
-# incremented before the requests are sent. Its log reports versions as deleted
-# that were only selected, and a failure anywhere leaves no way to tell how
-# much of the batch landed. Below, the deletes are sequential, oldest first,
-# and each one is reported after the API has answered it.
-#
-# Deleting a version needs the Admin role on the PACKAGE. Pushing to it needs
-# only Write, and a package stays linked to the repository that first published
-# it, so a repo that later took over the build can hold Write and nothing more.
-# GHCR refuses a delete it will not allow with 404, which reads as a missing
-# package and is really a missing grant. The step tells the two apart and names
-# the one it hit.
-#
-# The check after the deletes is what keeps a pass meaningful: the selection is
-# recomputed against the registry and must come back empty. This job cannot go
-# green while the package still sits above its floor, so it cannot succeed by
-# having done nothing.
+# The floor is lower here than in cerase-core because this package gains one
+# version per push to one repo, not one per push to a repo that builds nine.
 
 on:
   schedule:
-    # Weekly, Monday 04:45 UTC (offset from the sibling package repos).
+    # Weekly, Monday, offset from the sibling package repos so the runs do not
+    # contend on the same registry at the same minute.
     - cron: '45 4 * * 1'
   workflow_dispatch:
 
 permissions:
+  contents: read
   packages: write
 
 jobs:
@@ -50,141 +34,16 @@ jobs:
       KEEP: 10
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Prune GHCR versions of cerase-office-converter-mcp, keeping the newest 10
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The grep is half the check: sha256sum passes a pin that no longer lists
+      # the file, and a pin that pins nothing is the failure this cannot afford.
+      - name: Verify the vendored tooling against its pin
         run: |
           set -euo pipefail
+          grep -q 'scripts/ghcr-retention.sh' scripts/TOOLING.sha256
+          sha256sum --check scripts/TOOLING.sha256
 
-          ORG="$GITHUB_REPOSITORY_OWNER"
-          ORG_PATH="/orgs/$ORG/packages/container/$PACKAGE"
-          USER_PATH="/users/$ORG/packages/container/$PACKAGE"
-          WORK="${RUNNER_TEMP:-/tmp}"
-
-          # The status of the last failed gh call, read back out of its message because
-          # gh reports the code there and not in its exit status.
-          last_status() {
-            sed -n 's/.*(HTTP \([0-9]\{3\}\)).*/\1/p' "$WORK/err" | tail -1
-          }
-
-          # The organization path is the documented one for a package an organization
-          # owns. It has been observed answering 503 for the versions collection while
-          # the user path returns the same list, so both are tried and the one that
-          # answered is used for every later call and printed. A retention run that
-          # quietly changed how it reads the registry is a run nobody can audit.
-          BASE=""
-          list_versions() {
-            local out="$1" path attempt
-            for path in "$ORG_PATH" "$USER_PATH"; do
-              for attempt in 1 2 3; do
-                if gh api "$path/versions?per_page=100" --paginate >"$WORK/raw" 2>"$WORK/err"; then
-                  jq -s 'add // []' "$WORK/raw" >"$out"
-                  BASE="$path"
-                  return 0
-                fi
-                case "$(last_status)" in
-                  429|5??) sleep $((attempt * 5)) ;;
-                  *) break ;;
-                esac
-              done
-            done
-            cat "$WORK/err" >&2
-            return 1
-          }
-
-          delete_version() {
-            local attempt
-            for attempt in 1 2 3; do
-              if gh api -X DELETE "$BASE/versions/$1" --silent >/dev/null 2>"$WORK/err"; then
-                return 0
-              fi
-              case "$(last_status)" in
-                429|5??) sleep $((attempt * 5)) ;;
-                *) return 1 ;;
-              esac
-            done
-            return 1
-          }
-
-          # Selection, and the whole point of writing it out rather than passing a
-          # pattern to an action: a version is protected by its TAGS. Untagged versions
-          # go first because this repo builds one platform with provenance off, so an
-          # untagged manifest is a superseded build and never a child of a tagged index.
-          cat >"$WORK/select.jq" <<'JQ'
-          [ .[]
-            | { id, created_at, tags: (.metadata.container.tags // []) }
-            | . + { protected: (.tags | any(. == "latest" or . == "main" or test("^v[0-9]"))) }
-          ]
-          | ( map(select((.tags | length) == 0)) ) as $untagged
-          | ( map(select((.tags | length) > 0 and (.protected | not)))
-              | sort_by(.created_at)
-              | (if length > $keep then .[0 : length - $keep] else [] end) ) as $stale
-          | ($untagged + $stale)
-          | sort_by(.created_at)
-          | .[]
-          | "\(.id) \(.created_at) \(if (.tags|length) == 0 then "-" else (.tags|join(",")) end)"
-          JQ
-
-          list_versions "$WORK/versions.json" || {
-            echo "::error::cannot read the versions of $PACKAGE"
-            exit 1
-          }
-          echo "read $(jq length "$WORK/versions.json") versions of $PACKAGE via $BASE"
-
-          # Deleting a version needs the Admin role on the package; pushing to it needs
-          # only Write. A package stays linked to the repository that first published it,
-          # so a repo that took over the build can hold Write and nothing more.
-          LINKED="$(gh api "$ORG_PATH" --jq '.repository.full_name' 2>/dev/null || echo unknown)"
-          if [ "$LINKED" != "$GITHUB_REPOSITORY" ]; then
-            echo "note: $PACKAGE is linked to $LINKED while this workflow runs in $GITHUB_REPOSITORY"
-            echo "note: if a delete below is refused, the missing Admin grant on the package is why"
-          fi
-
-          jq -r --argjson keep "$KEEP" -f "$WORK/select.jq" \
-            "$WORK/versions.json" >"$WORK/to-delete.txt"
-          SELECTED="$(wc -l <"$WORK/to-delete.txt" | tr -d ' ')"
-
-          jq -r '.[] | select((.metadata.container.tags // []) | any(. == "latest" or . == "main" or test("^v[0-9]")))
-                 | "kept, protected by tag: \(.id) \(.metadata.container.tags | join(","))"' \
-            "$WORK/versions.json"
-
-          if [ "$SELECTED" -eq 0 ]; then
-            echo "nothing to prune: every version is protected or inside the newest $KEEP"
-            exit 0
-          fi
-          echo "selected $SELECTED versions to delete, oldest first"
-
-          DELETED=0
-          while read -r id created tags; do
-            if delete_version "$id"; then
-              DELETED=$((DELETED + 1))
-              echo "deleted $id $created $tags"
-              continue
-            fi
-            # GHCR answers a delete it will not allow and a delete of something already
-            # gone with the same 404, and only one of the two may pass. Re-reading the
-            # version separates them: the listing above proves this token can read the
-            # package, so a version that reads back is one this token may not delete.
-            if gh api "$BASE/versions/$id" >/dev/null 2>&1; then
-              echo "::error::refused to delete version $id of $PACKAGE, which still exists."
-              echo "::error::Deleting needs the Admin role on the package and this token appears to hold Write. Grant this repository Admin on the package in the organization package settings, run the retention from $LINKED, or supply a token carrying delete:packages."
-              exit 1
-            fi
-            echo "version $id was already gone, skipped"
-          done <"$WORK/to-delete.txt"
-          echo "deleted $DELETED of $SELECTED selected versions"
-
-          # What makes a green run mean something. The selection is recomputed against
-          # the registry and must now be empty, so this job cannot pass while the package
-          # still sits above its floor. The retries absorb the delay between a delete
-          # returning and the listing reflecting it; the count is printed either way.
-          LEFT=""
-          for attempt in 1 2 3; do
-            sleep $((attempt * 5))
-            list_versions "$WORK/after.json" || continue
-            LEFT="$(jq -r --argjson keep "$KEEP" -f "$WORK/select.jq" "$WORK/after.json" | wc -l | tr -d ' ')"
-            if [ "$LEFT" = "0" ]; then
-              echo "$PACKAGE is at its floor: $(jq length "$WORK/after.json") versions remain"
-              exit 0
-            fi
-          done
-          echo "::error::the retention floor of $PACKAGE could not be confirmed after pruning (${LEFT:-the listing failed})"
-          exit 1
+      - name: Prune GHCR versions of cerase-office-converter-mcp to its retention floor
+        run: bash scripts/ghcr-retention.sh
