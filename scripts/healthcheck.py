@@ -44,6 +44,14 @@ which is how the first one was found, as a numeric library that could no longer
 start its worker pool. Reporting above a fraction of the ceiling turns that into
 a health signal while the runner still answers.
 
+Whatever it finds, the session it opened is ended before it exits. A probe runs
+every thirty seconds for the life of the container, so a session left behind is
+not one leak but 2.880 a day: measured on a runner nobody called, the bridge's
+heap grew 95 KB per probe with the handshake alone and 11 KB with the DELETE the
+transport defines, and the difference is the swap these containers were holding.
+It grows with TIME rather than with use, which is why no amount of watching an
+idle connector shows it.
+
 Exit 0 healthy, exit 1 unhealthy with the reason on stdout, which is where
 docker keeps the last output of a healthcheck.
 
@@ -146,6 +154,29 @@ def _decode(raw: str, method: str | None) -> dict:
     return decoded
 
 
+def _terminate(session: str) -> None:
+    """End the session this probe opened.
+
+    Best effort by construction: the check has already reached its verdict by
+    the time this runs, and a bridge that answers the handshake but not the
+    termination is a bridge with an old proxy in it, not a sick runner. So every
+    failure here is swallowed -- turning one into a red would make the probe
+    report the opposite of what it measured.
+    """
+    request = urllib.request.Request(
+        ENDPOINT,
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Mcp-Session-Id": session,
+        },
+        method="DELETE",
+    )
+    try:
+        urllib.request.urlopen(request, timeout=_remaining()).read()
+    except Exception:
+        pass
+
+
 def _list_the_tools() -> int:
     """Full client sequence, because a partial one is what passes while broken:
     initialize, the initialized notification the protocol requires before any
@@ -175,23 +206,29 @@ def _list_the_tools() -> int:
     if not session:
         raise Unhealthy("initialize returned no session id")
 
+    # From here the session exists, so every way out of this function goes
+    # through the termination -- including the busy one, which is the common
+    # case on a runner doing its job and would otherwise leak the most.
     try:
-        _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
-    except Occupied as exc:
-        raise Unhealthy(
-            "the initialized notification did not answer: the bridge itself is not serving"
-        ) from exc
+        try:
+            _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
+        except Occupied as exc:
+            raise Unhealthy(
+                "the initialized notification did not answer: the bridge itself is not serving"
+            ) from exc
 
-    answer, _ = _post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, session)
-    if "error" in answer:
-        raise Unhealthy(f"tools/list returned an error: {answer['error']}")
-    result = answer.get("result")
-    if not isinstance(result, dict):
-        raise Unhealthy("tools/list returned no result object")
-    tools = result.get("tools")
-    if not isinstance(tools, list):
-        raise Unhealthy("tools/list returned no tool list")
-    return len(tools)
+        answer, _ = _post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, session)
+        if "error" in answer:
+            raise Unhealthy(f"tools/list returned an error: {answer['error']}")
+        result = answer.get("result")
+        if not isinstance(result, dict):
+            raise Unhealthy("tools/list returned no result object")
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            raise Unhealthy("tools/list returned no tool list")
+        return len(tools)
+    finally:
+        _terminate(session)
 
 
 def _bridge_epoch() -> str:
