@@ -77,7 +77,7 @@ EXPOSE 3000
 # It completes the handshake and lists this server's tools, which is the first
 # request that has to reach the stdio child. The script keeps itself inside the
 # timeout by budget, so the timeout below is its ceiling and not its schedule.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=5m --start-interval=5s --timeout=10s --start-period=60s --retries=2 \
     CMD python3 /app/healthcheck.py || exit 1
 
 ENTRYPOINT ["sh", "-c", "exec mcp-proxy --port 3000 --host 0.0.0.0 --pass-environment -- python /app/server.py"]
