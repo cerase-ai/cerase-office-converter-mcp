@@ -5,5 +5,5 @@
 # constructs a FastMCP instance at import time. Nothing else from
 # requirements.txt is: LibreOffice, pandoc and the control-plane are all faked,
 # so the suite needs no binaries and no network.
-mcp>=1.0,<2.0
-pytest>=8.0,<9.0
+mcp>=2.1.1,<3.0
+pytest>=9.1.1,<10.0
