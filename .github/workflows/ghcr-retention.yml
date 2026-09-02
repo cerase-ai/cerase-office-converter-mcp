@@ -35,7 +35,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The grep is half the check: sha256sum passes a pin that no longer lists
       # the file, and a pin that pins nothing is the failure this cannot afford.
