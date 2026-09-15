@@ -124,7 +124,7 @@ jobs:
             org.opencontainers.image.title=cerase-office-converter-mcp
             org.opencontainers.image.description=LibreOffice + pandoc + xelatex headless converter MCP
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.licenses=MIT
 
       - name: Build & push image
         uses: docker/build-push-action@v6
