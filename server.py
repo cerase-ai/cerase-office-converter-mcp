@@ -374,10 +374,7 @@ def convert_md_to_pdf(input_b64: str | None = None, path: str | None = None, age
 def convert_md_to_docx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, reference_doc_b64: str | None = None, reference_doc_path: str | None = None, agent_binding: str = "") -> dict:
     """Convert plain markdown → Word .docx via pandoc. Provide `input_b64` OR a workspace `path`.
 
-    Optionally style the .docx from a template document (pandoc --reference-doc):
-    pass it by value as `reference_doc_b64` (inline base64 of a .docx) OR by
-    reference as `reference_doc_path` (a workspace file — use this for templates
-    too big to inline, e.g. embedded fonts/branding)."""
+    Optionally style the .docx from a template document (pandoc --reference-doc): pass it by value as `reference_doc_b64` (inline base64 of a .docx) OR by reference as `reference_doc_path` (a workspace file — use this for templates too big to inline, e.g. embedded fonts/branding)."""
     return _convert_tool("md", "docx", input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
 
 
@@ -395,17 +392,11 @@ def convert(
     reference_doc_path: str | None = None,
     agent_binding: str = "",
 ) -> dict:
-    """Generic conversion catch-all. Use the typed `convert_*_to_*` tools when
-    the pair is known; fall back here for less common ones (e.g. rtf → odt,
-    html → docx). Provide `input_b64` OR a workspace `path`.
+    """Generic conversion catch-all. Use the typed `convert_*_to_*` tools when the pair is known; fall back here for less common ones (e.g. rtf → odt, html → docx). Provide `input_b64` OR a workspace `path`.
 
-    Supported via LibreOffice: docx/odt/rtf/html/txt/xlsx/ods/csv/pptx/odp.
-    Supported via pandoc: md/markdown sources (target = docx/odt/pdf/html).
+    Supported via LibreOffice: docx/odt/rtf/html/txt/xlsx/ods/csv/pptx/odp. Supported via pandoc: md/markdown sources (target = docx/odt/pdf/html).
 
-    For a markdown source going to docx/odt/pptx you may style the output from a
-    template document (pandoc --reference-doc): pass `reference_doc_b64` (inline
-    base64) OR `reference_doc_path` (a workspace file, for templates too big to
-    inline). It does not apply to LibreOffice conversions or to PDF output.
+    For a markdown source going to docx/odt/pptx you may style the output from a template document (pandoc --reference-doc): pass `reference_doc_b64` (inline base64) OR `reference_doc_path` (a workspace file, for templates too big to inline). It does not apply to LibreOffice conversions or to PDF output.
     """
     return _convert_tool(source_format, target_format, input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
 
