@@ -67,6 +67,17 @@ jobs:
           fi
           echo "OK: HEALTHCHECK present"
 
+      # README.md's tool table is what an installer reads to learn what this
+      # connector does. build-and-push needs this job, so an image whose server
+      # registers a tool the README omits, or lacks one it lists, is never
+      # pushed. The script is the same file in every connector repo, and the
+      # digest reds an edit to it that did not also change its pin.
+      - name: README lists exactly the tools server.py registers
+        run: |
+          set -euo pipefail
+          sha256sum -c scripts/readme-tools-check.sha256
+          python3 scripts/readme-tools-check.py
+
   test:
     runs-on: ubuntu-latest
     steps:
