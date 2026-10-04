@@ -6,6 +6,8 @@
 #   convert_pptx_to_pdf, convert_pptx_to_odp, convert_odp_to_pptx,
 #   convert_xlsx_to_pdf, convert_xlsx_to_ods, convert_ods_to_xlsx,
 #   convert_md_to_pdf (pandoc + TeX), convert_md_to_docx (pandoc),
+#   convert_md_to_pptx (pandoc), convert_html_to_pdf (Chromium),
+#   create_xlsx (openpyxl, from rows),
 #   convert(input_b64, source_format, target_format) — catch-all
 #
 # Distribution: built locally from this Dockerfile. Image is large
@@ -23,9 +25,14 @@ FROM python:3.13.9-slim@sha256:326df678c20c78d465db501563f3492d17c42a4afe33a1f2b
 # - pandoc (markdown ↔ docx / odt / html / many)
 # - texlive-xetex + texlive-latex-recommended + texlive-fonts-recommended
 #   (PDF generation engine for pandoc; xelatex handles unicode + EU fonts)
+# - lmodern (pandoc's LaTeX template loads lmodern.sty; without it every
+#   markdown → PDF conversion stopped on «File `lmodern.sty' not found»)
+# - chromium (HTML → PDF as a browser prints it; LibreOffice's HTML import drops
+#   CSS grid, flexbox and backgrounds, so a designed page lost its layout)
 # - fonts-* baseline (so converted docs don't render with missing-glyph squares)
 # - ca-certificates, curl (diagnostics + https for mcp-proxy)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium \
         libreoffice \
         libreoffice-java-common \
         default-jre-headless \
@@ -33,6 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         texlive-xetex \
         texlive-latex-recommended \
         texlive-fonts-recommended \
+        lmodern \
         fonts-liberation \
         fonts-dejavu \
         fonts-noto-core \

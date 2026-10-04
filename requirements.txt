@@ -4,3 +4,5 @@
 # unpinned + the existing version ranges declared inline.
 mcp>=1.0,<2.0
 mcp-proxy>=0.3,<1.0
+# create_xlsx builds the workbook; the assistant's container runs no Python.
+openpyxl>=3.1,<4.0

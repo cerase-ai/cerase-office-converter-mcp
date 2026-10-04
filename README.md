@@ -1,8 +1,9 @@
 # cerase-office-converter-mcp
 
-An MCP server that converts documents between office formats. Markdown sources
-go through pandoc (with XeLaTeX for PDF); every other source goes through
-LibreOffice in headless mode. It calls no model.
+An MCP server that converts documents between office formats and builds Excel
+workbooks. Markdown sources go through pandoc (with XeLaTeX for PDF), HTML pages
+to PDF through headless Chromium, workbooks through openpyxl, and every other
+source through LibreOffice in headless mode. It calls no model.
 
 ## Tools
 
@@ -19,16 +20,21 @@ LibreOffice in headless mode. It calls no model.
 | `convert_ods_to_xlsx` | OpenDocument `.ods` to Excel `.xlsx`. | LibreOffice |
 | `convert_md_to_pdf` | Markdown to PDF. | pandoc + XeLaTeX |
 | `convert_md_to_docx` | Markdown to Word `.docx`, optionally styled from a reference document. | pandoc |
-| `convert` | Any pair named by `source_format` and `target_format`, for pairs without a dedicated tool, such as `rtf` to `odt` or `html` to `docx`. Its description lists `docx`, `odt`, `rtf`, `html`, `txt`, `xlsx`, `ods`, `csv`, `pptx` and `odp` for LibreOffice, and `docx`, `odt`, `pdf` and `html` as pandoc targets. | pandoc for `md`/`markdown` sources, LibreOffice otherwise |
+| `convert_md_to_pptx` | Markdown to PowerPoint `.pptx` with editable slides, optionally styled from a template `.pptx`. | pandoc |
+| `convert_html_to_pdf` | An HTML page to PDF as a browser prints it, keeping CSS grid, flexbox, web fonts and backgrounds; `paper` and `orientation` set the page when the page sets none. | Chromium |
+| `create_xlsx` | An Excel `.xlsx` workbook built from rows: several sheets, formulas, a bold frozen header, number formats per column, dates as dates. | openpyxl |
+| `convert` | Any pair named by `source_format` and `target_format`, for pairs without a dedicated tool, such as `rtf` to `odt` or `html` to `docx`. Its description lists `docx`, `odt`, `rtf`, `html`, `txt`, `xlsx`, `ods`, `csv`, `pptx` and `odp` for LibreOffice, and `docx`, `odt`, `pptx`, `pdf` and `html` as pandoc targets. | pandoc for `md`/`markdown` sources, LibreOffice otherwise |
 
-Every tool takes exactly one of `input_b64` (the file as base64) or `path` (a
+Every conversion tool takes exactly one of `input_b64` (the file as base64) or `path` (a
 file in the calling assistant's workspace), an optional `output_filename`, and
 `agent_id` and `agent_binding`, which the Cerase gateway fills; the model never
 sets them. Every tool returns `{path, filename, size_bytes}` when the result
 was written into the workspace, or `{filename, size_bytes, contents_base64}`
-when it was not.
+when it was not. `create_xlsx` takes `sheets` instead of a file: each one a
+`name`, its `rows`, and optionally `header_rows`, `freeze`, `column_widths` and
+`number_formats`.
 
-`convert_md_to_docx` and `convert` (for a markdown source going to `docx`,
+`convert_md_to_docx`, `convert_md_to_pptx` and `convert` (for a markdown source going to `docx`,
 `odt` or `pptx`) accept a pandoc reference document that styles the output:
 `reference_doc_b64` inline, or `reference_doc_path` from the workspace. It must
 be of the same format as the output; with any other output format, and with
@@ -71,8 +77,8 @@ docker build -t cerase-office-converter-mcp .
 docker run --rm -p 3000:3000 cerase-office-converter-mcp
 ```
 
-The image installs LibreOffice, a headless Java runtime, pandoc, XeLaTeX and the
-Liberation, DejaVu and Noto fonts. `server.py` speaks MCP over stdio; the image
+The image installs LibreOffice, a headless Java runtime, pandoc, XeLaTeX,
+Chromium, openpyxl and the Liberation, DejaVu and Noto fonts. `server.py` speaks MCP over stdio; the image
 runs it behind `mcp-proxy`, which serves Streamable HTTP at
 `http://localhost:3000/mcp` and SSE at `http://localhost:3000/sse`. Run without
 the control-plane variables, every tool returns the converted file as base64.
@@ -81,7 +87,8 @@ The image's `HEALTHCHECK` runs `scripts/healthcheck.py`, an MCP client that
 completes the handshake and lists the tools over `/mcp`; its
 `CERASE_HEALTHCHECK_*` variables exist to point it at a stub in tests.
 
-The tests fake LibreOffice, pandoc and the control-plane:
+The tests fake LibreOffice, pandoc, Chromium and the control-plane; openpyxl
+runs for real:
 
 ```sh
 pip install -r requirements-dev.txt

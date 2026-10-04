@@ -6,6 +6,12 @@ Exposes cross-format document conversion tools backed by:
     Office formats (.docx/.xlsx/.pptx) ↔ ODF (.odt/.ods/.odp) ↔ PDF.
   - pandoc for markup ↔ Office (.md ↔ .docx/.odt + html/latex/...).
   - xelatex (TeX Live) as the PDF engine for pandoc markdown → PDF.
+  - headless Chromium for HTML → PDF. LibreOffice reads HTML too, and drops CSS
+    grid, flexbox and background colours, so a designed page came out as a
+    column of unstyled boxes.
+  - openpyxl for a workbook built from rows (`create_xlsx`). The assistant's own
+    container runs no Python, so a workbook with formulas, a frozen header and
+    number formats is made here rather than there.
 
 Input + output both flow through the control-plane file-broker (this is a
 SHARED runner that mounts no agent volume), mirroring cerase-deck-renderer:
@@ -29,20 +35,30 @@ profile dir per container (spawned once at first conversion, reused after).
 from __future__ import annotations
 
 import base64
+import datetime
+import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import urllib.request
+from typing import Literal
 from urllib.parse import urlencode
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, Field
 
 mcp = FastMCP("cerase-office-converter")
 
 SOFFICE = shutil.which("soffice") or "/usr/bin/soffice"
 PANDOC = shutil.which("pandoc") or "/usr/bin/pandoc"
 XELATEX = shutil.which("xelatex") or "/usr/bin/xelatex"
+CHROMIUM = (
+    shutil.which("chromium")
+    or shutil.which("chromium-browser")
+    or "/usr/bin/chromium"
+)
 
 # Long-running profile so soffice doesn't re-init each call.
 PROFILE_DIR = "/tmp/cerase-office-profile"
@@ -227,7 +243,15 @@ def _pandoc_convert(
         # (M-DECK-CUSTOM-TEMPLATE-1 follow-on). pandoc keys it off the OUTPUT
         # format, so the reference doc must be the same family as target_format.
         cmd.append(f"--reference-doc={reference_doc}")
-    subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    if proc.returncode != 0 or not os.path.isfile(produced):
+        # pandoc's own words are the diagnosis (a missing LaTeX package, a
+        # character the font lacks); a bare exit status is not.
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"pandoc could not convert to {target_format} (exit {proc.returncode})"
+            + (f": {stderr[-500:]}" if stderr else "")
+        )
     return produced
 
 
@@ -277,18 +301,23 @@ def _do_conversion(
         with open(produced, "rb") as f:
             out_bytes = f.read()
         filename = output_filename or os.path.basename(produced)
-        # Mirror deck-renderer: write back via the broker, return a {path}
-        # handle; fall back to base64 for a dev / non-agent caller.
-        rel = f"outputs/{filename}"
-        if _write_workspace_file(agent_id, rel, out_bytes, agent_binding):
-            return {"path": rel, "filename": filename, "size_bytes": len(out_bytes)}
-        return {
-            "filename": filename,
-            "size_bytes": len(out_bytes),
-            "contents_base64": base64.b64encode(out_bytes).decode("ascii"),
-        }
+        return _deliver(agent_id, filename, out_bytes, agent_binding)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _deliver(agent_id: str | None, filename: str, out_bytes: bytes, agent_binding: str = "") -> dict:
+    """Write a produced file into the caller's workspace and answer with its
+    `{path}` handle; without an agent or a broker, answer with the bytes inline
+    (dev, or a caller with no workspace). Mirrors the deck renderer."""
+    rel = f"outputs/{filename}"
+    if _write_workspace_file(agent_id, rel, out_bytes, agent_binding):
+        return {"path": rel, "filename": filename, "size_bytes": len(out_bytes)}
+    return {
+        "filename": filename,
+        "size_bytes": len(out_bytes),
+        "contents_base64": base64.b64encode(out_bytes).decode("ascii"),
+    }
 
 
 # Every tool takes the same broker-aware inputs: EITHER `input_b64` (inline)
@@ -378,6 +407,208 @@ def convert_md_to_docx(input_b64: str | None = None, path: str | None = None, ag
     return _convert_tool("md", "docx", input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
 
 
+@mcp.tool()
+def convert_md_to_pptx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, reference_doc_b64: str | None = None, reference_doc_path: str | None = None, agent_binding: str = "") -> dict:
+    """Convert markdown → PowerPoint .pptx via pandoc: editable slides. Provide `input_b64` OR a workspace `path`.
+
+    Slides follow pandoc's rules: a YAML block with `title` (and optionally `subtitle`, `author`, `date`) makes the title slide; each `## heading` starts a slide; a line holding only `---` also starts one; `- ` bullets, tables and images become slide content; a `::: notes` block becomes the slide's speaker notes.
+
+    Optionally style the slides from a template .pptx (pandoc --reference-doc): pass it by value as `reference_doc_b64` OR by reference as `reference_doc_path` (a workspace file)."""
+    return _convert_tool("md", "pptx", input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
+
+
+# ─── HTML → PDF through Chromium ─────────────────────────────────
+
+_PAPERS = {"a4": "A4", "a3": "A3", "a5": "A5", "letter": "letter", "legal": "legal"}
+_ORIENTATIONS = ("portrait", "landscape")
+
+
+def _page_css(paper: str, orientation: str) -> str:
+    """The default page box, and backgrounds printed as they are on screen.
+
+    It goes FIRST in the document, so a page that declares its own `@page`
+    keeps it: a later rule of the same weight wins."""
+    return (
+        "<style>"
+        f"@page {{ size: {paper} {orientation}; margin: 0; }} "
+        "html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }"
+        "</style>"
+    )
+
+
+def _with_page_css(html: str, css: str) -> str:
+    match = re.search(r"<head[^>]*>", html, flags=re.IGNORECASE)
+    if match:
+        return html[: match.end()] + css + html[match.end():]
+    match = re.search(r"<html[^>]*>", html, flags=re.IGNORECASE)
+    if match:
+        return html[: match.end()] + "<head>" + css + "</head>" + html[match.end():]
+    return css + html
+
+
+@mcp.tool()
+def convert_html_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, paper: str = "A4", orientation: str = "portrait", agent_binding: str = "") -> dict:
+    """Convert an HTML page → PDF through headless Chromium, the way a browser prints it: CSS grid, flexbox, web fonts and background colours are kept. Provide `input_b64` OR a workspace `path`.
+
+    `paper` is A4 (default), A3, A5, letter or legal; `orientation` is portrait (default) or landscape. A page that declares its own `@page` size keeps it.
+
+    Only the HTML file is read: an image or stylesheet it names by a relative path is not found, so put images inline as `data:` URIs or link them by https URL."""
+    paper_key = (paper or "A4").strip().lower()
+    if paper_key not in _PAPERS:
+        raise ValueError(f"paper must be one of A4, A3, A5, letter, legal — not {paper!r}")
+    orient = (orientation or "portrait").strip().lower()
+    if orient not in _ORIENTATIONS:
+        raise ValueError(f"orientation must be portrait or landscape — not {orientation!r}")
+
+    html = _resolve_input_bytes(input_b64, path, agent_id, agent_binding).decode("utf-8", errors="replace")
+    work = tempfile.mkdtemp(prefix="cerase-office-html-", dir="/tmp")
+    try:
+        html_path = os.path.join(work, "page.html")
+        pdf_path = os.path.join(work, "page.pdf")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(_with_page_css(html, _page_css(_PAPERS[paper_key], orient)))
+        # --no-sandbox: the container has no user namespaces for Chromium's own
+        # sandbox, as in the deck renderer. A profile dir under the work dir so
+        # nothing persists between calls.
+        proc = subprocess.run(
+            [
+                CHROMIUM,
+                "--headless",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                f"--user-data-dir={os.path.join(work, 'profile')}",
+                "--run-all-compositor-stages-before-draw",
+                "--virtual-time-budget=5000",
+                # The flag Chromium 154 reads; the older --print-to-pdf-no-header
+                # is ignored and prints the date and the file URL on every page.
+                "--no-pdf-header-footer",
+                f"--print-to-pdf={pdf_path}",
+                f"file://{html_path}",
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if proc.returncode != 0 or not os.path.isfile(pdf_path):
+            stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"Chromium produced no PDF (exit {proc.returncode})"
+                + (f": {stderr[-500:]}" if stderr else "")
+            )
+        with open(pdf_path, "rb") as f:
+            out_bytes = f.read()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    if output_filename:
+        filename = output_filename
+    elif path:
+        filename = os.path.splitext(os.path.basename(path))[0] + ".pdf"
+    else:
+        filename = "page.pdf"
+    return _deliver(agent_id, filename, out_bytes, agent_binding)
+
+
+# ─── A workbook built from rows ──────────────────────────────────
+
+class Sheet(BaseModel):
+    """One worksheet of `create_xlsx`."""
+
+    name: str = Field(description="Sheet name: at most 31 characters, none of [ ] : * ? / \\.")
+    rows: list[list[str | int | float | bool | None]] = Field(description="The rows, top to bottom. A string starting with `=` is a formula (`=SUM(B2:B9)`); a `YYYY-MM-DD` string is stored as a date; null leaves the cell empty.")
+    header_rows: int = Field(default=1, description="How many top rows are a header: bold, shaded, and frozen so they stay visible while scrolling. 0 for none.")
+    freeze: str | None = Field(default=None, description="The cell to freeze panes at, such as `B2`. Defaults to the first cell under the header.")
+    column_widths: dict[str, float] | None = Field(default=None, description="Width per column letter, such as {\"A\": 30}. Columns not named are sized to their content.")
+    number_formats: dict[str, str] | None = Field(default=None, description="Excel number format per column letter, applied under the header, such as {\"B\": \"#,##0.00 \\\"€\\\"\", \"C\": \"0.0%\"}.")
+
+
+_SHEET_FORBIDDEN = re.compile(r"[\[\]:*?/\\]")
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MAX_CELLS = 500_000
+
+
+def _cell_value(value):
+    if isinstance(value, str) and _ISO_DATE.match(value):
+        try:
+            return datetime.datetime.strptime(value, "%Y-%m-%d"), "yyyy-mm-dd"
+        except ValueError:
+            return value, None
+    return value, None
+
+
+def _build_workbook(sheets: list[Sheet]) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    if not sheets:
+        raise ValueError("a workbook needs at least one sheet")
+    seen: set[str] = set()
+    cells = 0
+    for sheet in sheets:
+        if not sheet.name or len(sheet.name) > 31:
+            raise ValueError(f"sheet name {sheet.name!r} must be 1 to 31 characters")
+        if _SHEET_FORBIDDEN.search(sheet.name):
+            raise ValueError(f"sheet name {sheet.name!r} cannot contain [ ] : * ? / \\")
+        if sheet.name.lower() in seen:
+            raise ValueError(f"sheet name {sheet.name!r} is used twice; Excel compares names without case")
+        seen.add(sheet.name.lower())
+        if not sheet.rows:
+            raise ValueError(f"sheet {sheet.name!r} has no rows")
+        cells += sum(len(r) for r in sheet.rows)
+    if cells > _MAX_CELLS:
+        raise ValueError(f"the workbook holds {cells} cells; the limit is {_MAX_CELLS}")
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    bold = Font(bold=True)
+    shade = PatternFill("solid", fgColor="E7E9EE")
+    for sheet in sheets:
+        ws = wb.create_sheet(sheet.name)
+        widths: dict[int, int] = {}
+        for r, row in enumerate(sheet.rows, start=1):
+            for c, raw in enumerate(row, start=1):
+                value, date_format = _cell_value(raw)
+                cell = ws.cell(row=r, column=c, value=value)
+                if date_format:
+                    cell.number_format = date_format
+                if r <= sheet.header_rows:
+                    cell.font = bold
+                    cell.fill = shade
+                shown = len(str(raw)) if raw is not None and not (isinstance(raw, str) and raw.startswith("=")) else 8
+                widths[c] = max(widths.get(c, 0), shown)
+        for c, length in widths.items():
+            ws.column_dimensions[get_column_letter(c)].width = min(max(8, round(length * 1.2) + 2), 60)
+        for letter, width in (sheet.column_widths or {}).items():
+            ws.column_dimensions[letter.upper()].width = width
+        for letter, fmt in (sheet.number_formats or {}).items():
+            for row in ws.iter_rows(min_row=sheet.header_rows + 1, min_col=ws[letter.upper() + "1"].column, max_col=ws[letter.upper() + "1"].column):
+                for cell in row:
+                    cell.number_format = fmt
+        if sheet.freeze:
+            ws.freeze_panes = sheet.freeze.upper()
+        elif sheet.header_rows > 0:
+            ws.freeze_panes = f"A{sheet.header_rows + 1}"
+
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+@mcp.tool()
+def create_xlsx(sheets: list[Sheet], output_filename: str = "workbook.xlsx", agent_id: str | None = None, agent_binding: str = "") -> dict:
+    """Create an Excel .xlsx workbook from rows: one or more sheets, real formulas, a bold shaded header frozen at the top, Excel number formats per column, dates stored as dates. The file is written to `outputs/<output_filename>` in your workspace.
+
+    Each sheet is {name, rows, header_rows?, freeze?, column_widths?, number_formats?}. Numbers go in as JSON numbers, not strings, so formulas can add them up.
+
+    For OpenDocument (.ods) convert the result with `convert_xlsx_to_ods`; for a PDF with `convert_xlsx_to_pdf`."""
+    filename = output_filename or "workbook.xlsx"
+    if not filename.lower().endswith(".xlsx"):
+        filename += ".xlsx"
+    parsed = [s if isinstance(s, Sheet) else Sheet.model_validate(s) for s in sheets]
+    return _deliver(agent_id, filename, _build_workbook(parsed), agent_binding)
+
+
 # ─── Catch-all generic converter ─────────────────────────────────
 
 @mcp.tool()
@@ -394,7 +625,7 @@ def convert(
 ) -> dict:
     """Generic conversion catch-all. Use the typed `convert_*_to_*` tools when the pair is known; fall back here for less common ones (e.g. rtf → odt, html → docx). Provide `input_b64` OR a workspace `path`.
 
-    Supported via LibreOffice: docx/odt/rtf/html/txt/xlsx/ods/csv/pptx/odp. Supported via pandoc: md/markdown sources (target = docx/odt/pdf/html).
+    Supported via LibreOffice: docx/odt/rtf/html/txt/xlsx/ods/csv/pptx/odp. Supported via pandoc: md/markdown sources (target = docx/odt/pptx/pdf/html). For a designed HTML page to PDF use `convert_html_to_pdf`, which prints through a browser.
 
     For a markdown source going to docx/odt/pptx you may style the output from a template document (pandoc --reference-doc): pass `reference_doc_b64` (inline base64) OR `reference_doc_path` (a workspace file, for templates too big to inline). It does not apply to LibreOffice conversions or to PDF output.
     """

@@ -137,6 +137,24 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
 
+      # The unit tests fake every binary, so they cannot see a conversion that
+      # fails for real: markdown → PDF failed on every input for as long as the
+      # image lacked lmodern.sty. Each tool converts a real file in the image
+      # that is about to be pushed, and a failure stops the push.
+      - name: Build the image for the smoke run
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: cerase-office-converter-mcp:smoke
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+          provenance: false
+
+      - name: Every tool converts a real file in the built image
+        run: docker run --rm -v "$PWD/scripts:/smoke:ro" --entrypoint python cerase-office-converter-mcp:smoke /smoke/smoke.py
+
       - name: Build & push image
         uses: docker/build-push-action@v6
         with:
