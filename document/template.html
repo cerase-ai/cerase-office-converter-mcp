@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="$if(lang)$$lang$$else$en$endif$">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https:; font-src https: data:; img-src https: data:; base-uri 'none'; form-action 'none'">
+<title>$pagetitle$</title>
+</head>
+<body>
+$if(title-block)$
+<header class="title-block">
+$if(title)$
+<h1 class="title">$title$</h1>
+$endif$
+$if(subtitle)$
+<p class="subtitle">$subtitle$</p>
+$endif$
+$if(title-block-fields)$
+<div class="fields">
+$if(title-block-parties)$
+<div class="parties">
+$for(title-block-parties)$
+<dl class="field field-$title-block-parties.key$">
+<dt>$title-block-parties.label$</dt>
+<dd>$title-block-parties.value$</dd>
+</dl>
+$endfor$
+</div>
+$endif$
+$if(title-block-details)$
+<dl class="details">
+$for(title-block-details)$
+<div class="field field-$title-block-details.key$">
+<dt>$title-block-details.label$</dt>
+<dd>$title-block-details.value$</dd>
+</div>
+$endfor$
+</dl>
+$endif$
+</div>
+$endif$
+</header>
+$endif$
+<main>
+$body$
+</main>
+</body>
+</html>

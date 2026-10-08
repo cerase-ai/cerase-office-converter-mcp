@@ -96,6 +96,7 @@ def main() -> int:
     check("convert_md_to_pdf", lambda: server.convert_md_to_pdf(input_b64=b64(REPORT)), is_pdf)
     pptx = check("convert_md_to_pptx", lambda: server.convert_md_to_pptx(input_b64=b64(DECK)), lambda d: is_zip_with(d, "ppt/slides/slide2.xml"))
     check("convert_html_to_pdf", lambda: server.convert_html_to_pdf(input_b64=b64(PAGE)), is_pdf)
+    check("render_document", lambda: server.render_document(input_b64=b64(REPORT)), is_pdf)
     xlsx = check(
         "create_xlsx",
         lambda: server.create_xlsx(sheets=[{"name": "Sales", "rows": [["Region", "Q1", "Total"], ["North", 10, "=B2*2"]]}]),

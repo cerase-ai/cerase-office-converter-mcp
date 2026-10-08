@@ -1,0 +1,327 @@
+/* render_document's stylesheet: a business document printed by Chromium.
+   The page size comes before it, from `paper` and `orientation`; `template_css`
+   comes after it. A brand sets the custom properties below on :root. */
+:root {
+  --doc-font: "Noto Sans", "Liberation Sans", "DejaVu Sans", Arial, Helvetica, sans-serif;
+  --doc-mono: "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --doc-text: #1d2430;
+  --doc-muted: #5f6b7a;
+  --doc-accent: #1f3a5f;
+  --doc-rule: #d5dae1;
+  --doc-rule-strong: #9aa4b2;
+  --doc-fill: #f1f3f6;
+}
+
+@page {
+  margin: 20mm 20mm 22mm 20mm;
+  @bottom-right {
+    content: counter(page) " / " counter(pages);
+    font-family: var(--doc-font, "Noto Sans", "Liberation Sans", "DejaVu Sans", sans-serif);
+    font-size: 8.5pt;
+    color: var(--doc-muted, #5f6b7a);
+  }
+}
+
+html {
+  font-family: var(--doc-font);
+  font-size: 10.5pt;
+  line-height: 1.5;
+  color: var(--doc-text);
+  background: #fff;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  display: block;
+}
+
+/* The title block, from the YAML block on top. */
+.title-block {
+  margin: 0 0 9mm;
+}
+
+.title-block .title {
+  font-size: 21pt;
+  line-height: 1.2;
+  font-weight: 700;
+  color: var(--doc-accent);
+  margin: 0;
+}
+
+.title-block .subtitle {
+  font-size: 12pt;
+  line-height: 1.35;
+  color: var(--doc-muted);
+  margin: 2mm 0 0;
+}
+
+.title-block .fields {
+  display: flex;
+  justify-content: space-between;
+  gap: 10mm;
+  margin: 6mm 0 0;
+  padding: 3.5mm 0 0;
+  border-top: 1.5pt solid var(--doc-accent);
+}
+
+.title-block .parties {
+  flex: 1 1 auto;
+}
+
+.title-block .parties dl {
+  margin: 0 0 2.5mm;
+}
+
+.title-block .details {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  column-gap: 4mm;
+  row-gap: 1.2mm;
+  margin: 0;
+}
+
+.title-block .details .field {
+  display: contents;
+}
+
+.title-block dt {
+  font-size: 7.5pt;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--doc-muted);
+  margin: 0 0 0.8mm;
+}
+
+.title-block .details dt {
+  margin: 0;
+}
+
+.title-block dd {
+  margin: 0;
+  font-size: 10pt;
+  line-height: 1.4;
+}
+
+.title-block dd p {
+  margin: 0;
+}
+
+/* Text */
+p {
+  margin: 0 0 2.6mm;
+  text-align: left;
+  hyphens: manual;
+  orphans: 3;
+  widows: 3;
+}
+
+main h1,
+main h2,
+main h3,
+main h4,
+main h5,
+main h6 {
+  color: var(--doc-accent);
+  font-weight: 700;
+  line-height: 1.25;
+  break-after: avoid;
+  break-inside: avoid;
+}
+
+main h1 {
+  font-size: 13.5pt;
+  margin: 8mm 0 3mm;
+  padding-bottom: 1.5mm;
+  border-bottom: 0.75pt solid var(--doc-rule);
+}
+
+main h2 {
+  font-size: 11.5pt;
+  margin: 6mm 0 2mm;
+}
+
+main h3 {
+  font-size: 10.5pt;
+  margin: 5mm 0 1.5mm;
+}
+
+main h4,
+main h5,
+main h6 {
+  font-size: 10.5pt;
+  color: var(--doc-text);
+  margin: 4mm 0 1.5mm;
+}
+
+main > :first-child {
+  margin-top: 0;
+}
+
+strong,
+b {
+  font-weight: 700;
+}
+
+a {
+  color: var(--doc-accent);
+  text-decoration: underline;
+  text-decoration-thickness: 0.5pt;
+  text-underline-offset: 1.5pt;
+}
+
+ul,
+ol {
+  margin: 0 0 3mm;
+  padding-left: 6mm;
+}
+
+li {
+  margin: 0 0 1.2mm;
+}
+
+li > p {
+  margin: 0 0 1mm;
+}
+
+li::marker {
+  color: var(--doc-accent);
+}
+
+blockquote {
+  margin: 4mm 0;
+  padding: 0.5mm 0 0.5mm 4mm;
+  border-left: 2pt solid var(--doc-accent);
+  color: var(--doc-muted);
+}
+
+blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+main dl dt {
+  font-weight: 700;
+}
+
+main dl dd {
+  margin: 0 0 2mm 6mm;
+}
+
+code {
+  font-family: var(--doc-mono);
+  font-size: 0.92em;
+}
+
+pre {
+  font-family: var(--doc-mono);
+  font-size: 9pt;
+  line-height: 1.4;
+  background: var(--doc-fill);
+  padding: 3mm;
+  white-space: pre-wrap;
+  break-inside: avoid;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+figure {
+  margin: 4mm 0;
+  break-inside: avoid;
+}
+
+figcaption {
+  font-size: 8.5pt;
+  color: var(--doc-muted);
+  margin-top: 1.5mm;
+}
+
+/* Tables: a shaded header row, thin rules. A table of up to 15 rows is kept on
+   one page. A longer one breaks between rows, never inside one, never after
+   its first row or before its last, and repeats its header row. Keeping a long
+   table whole would push it to the next page and leave the one before empty. */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 3mm 0 5mm;
+  font-size: 9.5pt;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+thead {
+  display: table-header-group;
+}
+
+table:not(:has(tbody > tr:nth-child(16))) {
+  break-inside: avoid;
+}
+
+tr {
+  break-inside: avoid;
+}
+
+tbody > tr:nth-child(2),
+tbody > tr:last-child {
+  break-before: avoid;
+}
+
+th {
+  text-align: left;
+  font-weight: 700;
+  background: var(--doc-fill);
+  border-top: 0.75pt solid var(--doc-rule-strong);
+  border-bottom: 0.75pt solid var(--doc-rule-strong);
+  padding: 2mm 2.5mm;
+  vertical-align: bottom;
+}
+
+td {
+  padding: 1.8mm 2.5mm;
+  border-bottom: 0.5pt solid var(--doc-rule);
+  vertical-align: top;
+}
+
+tbody tr:last-child td {
+  border-bottom: 0.75pt solid var(--doc-rule-strong);
+}
+
+caption {
+  caption-side: bottom;
+  text-align: left;
+  font-size: 8.5pt;
+  color: var(--doc-muted);
+  padding-top: 1.5mm;
+}
+
+/* A horizontal rule in the body starts a new page; elsewhere it is a thin line. */
+hr {
+  border: 0;
+  border-top: 0.5pt solid var(--doc-rule);
+  margin: 4mm 0;
+}
+
+main > hr {
+  break-after: page;
+  border: 0;
+  height: 0;
+  margin: 0;
+}
+
+main > hr + * {
+  margin-top: 0;
+}
+
+.footnotes {
+  font-size: 8.5pt;
+  color: var(--doc-muted);
+}

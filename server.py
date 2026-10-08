@@ -9,6 +9,9 @@ Exposes cross-format document conversion tools backed by:
   - headless Chromium for HTML → PDF. LibreOffice reads HTML too, and drops CSS
     grid, flexbox and background colours, so a designed page came out as a
     column of unstyled boxes.
+  - pandoc + Chromium for a business document (`render_document`): Markdown to
+    an HTML page with the stylesheet in `document/`, printed by the same
+    Chromium call. A quote made with `convert_md_to_pdf` read like a LaTeX paper.
   - openpyxl for a workbook built from rows (`create_xlsx`). The assistant's own
     container runs no Python, so a workbook with formulas, a frozen header and
     number formats is made here rather than there.
@@ -59,6 +62,9 @@ CHROMIUM = (
     or shutil.which("chromium-browser")
     or "/usr/bin/chromium"
 )
+
+# render_document's pandoc template, filter and stylesheet.
+DOCUMENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "document")
 
 # Long-running profile so soffice doesn't re-init each call.
 PROFILE_DIR = "/tmp/cerase-office-profile"
@@ -446,27 +452,29 @@ def _with_page_css(html: str, css: str) -> str:
     return css + html
 
 
-@mcp.tool()
-def convert_html_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, paper: str = "A4", orientation: str = "portrait", agent_binding: str = "") -> dict:
-    """Convert an HTML page → PDF through headless Chromium, the way a browser prints it: CSS grid, flexbox, web fonts and background colours are kept. Provide `input_b64` OR a workspace `path`.
-
-    `paper` is A4 (default), A3, A5, letter or legal; `orientation` is portrait (default) or landscape. A page that declares its own `@page` size keeps it.
-
-    Only the HTML file is read: an image or stylesheet it names by a relative path is not found, so put images inline as `data:` URIs or link them by https URL."""
+def _page_box(paper: str, orientation: str, papers: dict[str, str]) -> str:
+    """The `_page_css` for a `paper` among `papers` and an `orientation`, or the
+    error naming what is accepted."""
     paper_key = (paper or "A4").strip().lower()
-    if paper_key not in _PAPERS:
-        raise ValueError(f"paper must be one of A4, A3, A5, letter, legal — not {paper!r}")
+    if paper_key not in papers:
+        raise ValueError(f"paper must be one of {', '.join(papers.values())} — not {paper!r}")
     orient = (orientation or "portrait").strip().lower()
     if orient not in _ORIENTATIONS:
         raise ValueError(f"orientation must be portrait or landscape — not {orientation!r}")
+    return _page_css(papers[paper_key], orient)
 
-    html = _resolve_input_bytes(input_b64, path, agent_id, agent_binding).decode("utf-8", errors="replace")
+
+def _chromium_pdf(html: str) -> bytes:
+    """Print an HTML page to PDF through headless Chromium and return the PDF.
+
+    The page is written to a file of its own and opened as `file://`, so an
+    image or stylesheet it names by a relative path is not found."""
     work = tempfile.mkdtemp(prefix="cerase-office-html-", dir="/tmp")
     try:
         html_path = os.path.join(work, "page.html")
         pdf_path = os.path.join(work, "page.pdf")
         with open(html_path, "w", encoding="utf-8") as f:
-            f.write(_with_page_css(html, _page_css(_PAPERS[paper_key], orient)))
+            f.write(html)
         # --no-sandbox: the container has no user namespaces for Chromium's own
         # sandbox, as in the deck renderer. A profile dir under the work dir so
         # nothing persists between calls.
@@ -496,9 +504,21 @@ def convert_html_to_pdf(input_b64: str | None = None, path: str | None = None, a
                 + (f": {stderr[-500:]}" if stderr else "")
             )
         with open(pdf_path, "rb") as f:
-            out_bytes = f.read()
+            return f.read()
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+@mcp.tool()
+def convert_html_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, paper: str = "A4", orientation: str = "portrait", agent_binding: str = "") -> dict:
+    """Convert an HTML page → PDF through headless Chromium, the way a browser prints it: CSS grid, flexbox, web fonts and background colours are kept. Provide `input_b64` OR a workspace `path`.
+
+    `paper` is A4 (default), A3, A5, letter or legal; `orientation` is portrait (default) or landscape. A page that declares its own `@page` size keeps it.
+
+    Only the HTML file is read: an image or stylesheet it names by a relative path is not found, so put images inline as `data:` URIs or link them by https URL."""
+    page_css = _page_box(paper, orientation, _PAPERS)
+    html = _resolve_input_bytes(input_b64, path, agent_id, agent_binding).decode("utf-8", errors="replace")
+    out_bytes = _chromium_pdf(_with_page_css(html, page_css))
 
     if output_filename:
         filename = output_filename
@@ -507,6 +527,100 @@ def convert_html_to_pdf(input_b64: str | None = None, path: str | None = None, a
     else:
         filename = "page.pdf"
     return _deliver(agent_id, filename, out_bytes, agent_binding)
+
+
+# ─── A business document: Markdown → HTML page → PDF ─────────────
+
+_DOCUMENT_PAPERS = {"a4": "A4", "letter": "letter"}
+
+# Raw HTML in the Markdown is read as text. `document/document.lua` removes what
+# this switch does not reach: event-handler attributes, and links and images
+# outside the schemes a document needs.
+_DOCUMENT_READER = "markdown-raw_html-raw_attribute"
+
+
+def _document_html(markdown: bytes, page_css: str, template_css: str) -> str:
+    """The standalone page `render_document` prints: pandoc's HTML with the page
+    box first, then the built-in stylesheet, then `template_css`."""
+    if re.search(r"</style", template_css, flags=re.IGNORECASE):
+        raise ValueError("template_css is a stylesheet and cannot contain `</style`")
+    with open(os.path.join(DOCUMENT_DIR, "style.css"), encoding="utf-8") as f:
+        styles = f"<style>\n{f.read()}</style>\n"
+    if template_css:
+        styles += f"<style>\n{template_css}\n</style>\n"
+
+    work = tempfile.mkdtemp(prefix="cerase-office-doc-", dir="/tmp")
+    try:
+        source = os.path.join(work, "document.md")
+        produced = os.path.join(work, "document.html")
+        with open(source, "wb") as f:
+            f.write(markdown)
+        proc = subprocess.run(
+            [
+                PANDOC, source,
+                "-f", _DOCUMENT_READER,
+                "-t", "html5",
+                "--standalone",
+                f"--template={os.path.join(DOCUMENT_DIR, 'template.html')}",
+                f"--lua-filter={os.path.join(DOCUMENT_DIR, 'document.lua')}",
+                "--wrap=none",
+                "-o", produced,
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if proc.returncode != 0 or not os.path.isfile(produced):
+            stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"pandoc could not read the document (exit {proc.returncode})"
+                + (f": {stderr[-500:]}" if stderr else "")
+            )
+        with open(produced, encoding="utf-8") as f:
+            html = f.read()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    head_end = html.lower().find("</head>")
+    if head_end < 0:
+        raise RuntimeError("pandoc wrote a page without a <head>")
+    return _with_page_css(html[:head_end] + styles + html[head_end:], page_css)
+
+
+def _pdf_page_count(pdf: bytes) -> int:
+    """The pages of a PDF Chromium printed: its page tree is written uncompressed,
+    one `/Type /Page` object per page."""
+    return len(re.findall(rb"/Type\s*/Page(?![A-Za-z])", pdf))
+
+
+@mcp.tool()
+def render_document(input_b64: str | None = None, path: str | None = None, output_filename: str = "document.pdf", paper: Literal["A4", "letter"] = "A4", orientation: Literal["portrait", "landscape"] = "portrait", template_css: str | None = None, template_path: str | None = None, agent_id: str | None = None, agent_binding: str = "") -> dict:
+    """Render a business document a person will send (a quote, a proposal, a report, a letter) from Markdown to a PDF laid out as one: a title block on the first page, a sans-serif body, tables with a header row and right-aligned amounts, the page number in the footer. Provide `input_b64` OR a workspace `path` to the .md file. `convert_md_to_pdf` remains for plain technical text.
+
+    A YAML block on top makes the title block: `title`, `subtitle`, `client` (or `recipient`), `reference` (or `number`), `date`, `author`, and `lang` (`it`, `en`, `fr`, `de` or `es`), which sets the language of the field labels. The body takes headings, paragraphs, bullet and numbered lists, pipe tables, bold, italic, links, blockquotes and images by https URL. In a pipe table, a `---:` column is right-aligned: use it for amounts. A line holding only `---`, with a blank line above and below, starts a new page. Raw HTML prints as text.
+
+    `paper` is A4 (default) or letter; `orientation` is portrait (default) or landscape. `template_css` is CSS added after the built-in stylesheet, for brand colours and fonts: set `--doc-accent` (title, headings, rules) and `--doc-font` on `:root`, or override any rule. `template_path` names a CSS file in your workspace instead, and is ignored when `template_css` is given.
+
+    The file is written to `outputs/<output_filename>` in your workspace (default `document.pdf`); a name ending in `.html` returns the HTML page instead of the PDF. Returns `{path, filename, size_bytes, format, pages}`, where `pages` is the PDF's page count and is absent for HTML."""
+    page_css = _page_box(paper, orientation, _DOCUMENT_PAPERS)
+    filename = output_filename or "document.pdf"
+    as_html = filename.lower().endswith((".html", ".htm"))
+    if not as_html and not filename.lower().endswith(".pdf"):
+        filename += ".pdf"
+
+    markdown = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
+    if not template_css and template_path:
+        template_css = _load_workspace_bytes(agent_id, template_path, agent_binding).decode("utf-8", errors="replace")
+    html = _document_html(markdown, page_css, template_css or "")
+
+    if as_html:
+        result = _deliver(agent_id, filename, html.encode("utf-8"), agent_binding)
+        result["format"] = "html"
+        return result
+    pdf = _chromium_pdf(html)
+    result = _deliver(agent_id, filename, pdf, agent_binding)
+    result["format"] = "pdf"
+    result["pages"] = _pdf_page_count(pdf)
+    return result
 
 
 # ─── A workbook built from rows ──────────────────────────────────

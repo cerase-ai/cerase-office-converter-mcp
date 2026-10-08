@@ -7,6 +7,7 @@
 #   convert_xlsx_to_pdf, convert_xlsx_to_ods, convert_ods_to_xlsx,
 #   convert_md_to_pdf (pandoc + TeX), convert_md_to_docx (pandoc),
 #   convert_md_to_pptx (pandoc), convert_html_to_pdf (Chromium),
+#   render_document (pandoc + Chromium, a business document from markdown),
 #   create_xlsx (openpyxl, from rows),
 #   convert(input_b64, source_format, target_format) — catch-all
 #
@@ -57,6 +58,10 @@ RUN pip install --no-cache-dir -r /tmp/requirements.lock \
 
 # MCP server skeleton.
 COPY server.py /app/server.py
+
+# render_document's pandoc template, pandoc filter and stylesheet. server.py
+# reads them from the directory beside it.
+COPY document/ /app/document/
 
 # The liveness probe below is a real MCP client, not a socket connect: with the
 # stdio child gone mcp-proxy keeps the listener open and answers the handshake

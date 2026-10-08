@@ -155,6 +155,18 @@ jobs:
       - name: Every tool converts a real file in the built image
         run: docker run --rm -v "$PWD/scripts:/smoke:ro" --entrypoint python cerase-office-converter-mcp:smoke /smoke/smoke.py
 
+      # The test job's runner has no pandoc or Chromium, so the tests that need
+      # them skip there: that raw HTML in render_document's Markdown never
+      # becomes an element, and that a quote prints with its title and pages.
+      # Here the whole suite runs in the image about to be pushed, and
+      # CERASE_REQUIRE_RENDERER turns a missing binary into a failure.
+      - name: The test suite passes in the built image, with the real pandoc and Chromium
+        run: >-
+          docker run --rm -v "$PWD:/src:ro" -w /src
+          -e CERASE_REQUIRE_RENDERER=1 -e PYTHONDONTWRITEBYTECODE=1
+          --entrypoint sh cerase-office-converter-mcp:smoke
+          -c 'pip install --user --quiet --disable-pip-version-check --no-warn-script-location -r requirements-dev.txt && python -m pytest tests/ -q -p no:cacheprovider'
+
       - name: Build & push image
         uses: docker/build-push-action@v6
         with:
