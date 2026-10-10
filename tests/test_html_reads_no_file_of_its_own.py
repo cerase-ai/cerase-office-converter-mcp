@@ -19,16 +19,22 @@ from __future__ import annotations
 import base64
 import io
 import os
-import shutil
 import uuid
 
 import pytest
 
 import server
 
+def _have(binary: str) -> bool:
+    return os.path.isfile(binary) and os.access(binary, os.X_OK)
+
+
+# The image's own renderers, as in test_render_document.py: a runner's
+# /usr/bin/chromium can be a wrapper that never prints, so a Chromium alone is
+# not the image.
 renderer = pytest.mark.skipif(
-    not (shutil.which(server.CHROMIUM) or os.path.isfile(server.CHROMIUM)) and not os.environ.get("CERASE_REQUIRE_RENDERER"),
-    reason="needs Chromium; CI runs this file inside the built image",
+    not (_have(server.PANDOC) and _have(server.CHROMIUM)) and not os.environ.get("CERASE_REQUIRE_RENDERER"),
+    reason="needs the image's Chromium; CI runs this file inside the built image",
 )
 
 SECRET = "Lucertola Fiordaliso 7781"
