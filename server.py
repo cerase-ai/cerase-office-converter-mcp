@@ -452,6 +452,35 @@ def _with_page_css(html: str, css: str) -> str:
     return css + html
 
 
+# What a page given to `convert_html_to_pdf` may load. Chromium opens it as
+# `file://`, and a page opened that way may frame, embed or link any other file
+# of this container: an `<iframe>` naming one printed it. `render_document`'s
+# template refuses that with the same policy; here the page is not ours, so its
+# scripts keep running and its images, fonts and stylesheets still load from
+# https or `data:` as the tool's description says, and nothing else does.
+_PAGE_POLICY = (
+    "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https:; "
+    "style-src 'unsafe-inline' https:; font-src https: data:; img-src https: data:; "
+    "base-uri 'none'; form-action 'none'"
+)
+
+_DOCTYPE = re.compile(r"\A(?:\ufeff)?\s*<!doctype[^>]*>", flags=re.IGNORECASE)
+
+
+def _with_page_policy(html: str) -> str:
+    """The page with the policy as its first element, before any markup it holds.
+
+    Right after the doctype, where the parser opens the head it implies and
+    reads the policy before the page's first element: a policy in the page's own
+    `<head>` would arrive after a frame written ahead of it. The doctype stays
+    first, so the page keeps the rendering mode it asked for."""
+    meta = f'<meta http-equiv="Content-Security-Policy" content="{_PAGE_POLICY}">'
+    match = _DOCTYPE.match(html)
+    if match:
+        return html[: match.end()] + meta + html[match.end():]
+    return meta + html
+
+
 def _page_box(paper: str, orientation: str, papers: dict[str, str]) -> str:
     """The `_page_css` for a `paper` among `papers` and an `orientation`, or the
     error naming what is accepted."""
@@ -518,7 +547,7 @@ def convert_html_to_pdf(input_b64: str | None = None, path: str | None = None, a
     Only the HTML file is read: an image or stylesheet it names by a relative path is not found, so put images inline as `data:` URIs or link them by https URL."""
     page_css = _page_box(paper, orientation, _PAPERS)
     html = _resolve_input_bytes(input_b64, path, agent_id, agent_binding).decode("utf-8", errors="replace")
-    out_bytes = _chromium_pdf(_with_page_css(html, page_css))
+    out_bytes = _chromium_pdf(_with_page_policy(_with_page_css(html, page_css)))
 
     if output_filename:
         filename = output_filename
