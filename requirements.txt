@@ -6,3 +6,13 @@ mcp>=1.0,<2.0
 mcp-proxy>=0.3,<1.0
 # create_xlsx builds the workbook; the assistant's container runs no Python.
 openpyxl>=3.1,<4.0
+# inspect_pdf and fill_pdf_form read and fill AcroForm fields (BSD).
+pypdf>=5.0,<7.0
+# find_text_in_pdf locates a word with its box, in the top-left convention every PDF tool here uses (MIT, brings pdfminer.six).
+pdfplumber>=0.11,<1.0
+# render_pdf_page rasterises a page to PNG (Apache-2.0/BSD).
+pypdfium2>=4.30,<6.0
+# add_to_pdf draws the overlay page it merges on top (BSD).
+reportlab>=4.0,<5.0
+# add_to_pdf loads a signature image and cuts its white background (MIT-CMU).
+pillow>=10.0,<13.0

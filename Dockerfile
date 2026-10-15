@@ -63,6 +63,11 @@ COPY server.py /app/server.py
 # reads them from the directory beside it.
 COPY document/ /app/document/
 
+# The handwriting font `add_to_pdf` embeds for a signature written as a name
+# (SIL Open Font License). server.py finds it beside itself, so tests and the
+# image take the same path.
+COPY fonts/ /app/fonts/
+
 # The liveness probe below is a real MCP client, not a socket connect: with the
 # stdio child gone mcp-proxy keeps the listener open and answers the handshake
 # from what it recorded at its own startup, so the connect went on passing for a

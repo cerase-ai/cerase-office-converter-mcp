@@ -25,6 +25,11 @@ source through LibreOffice in headless mode. It calls no model.
 | `convert_html_to_pdf` | An HTML page to PDF as a browser prints it, keeping CSS grid, flexbox, web fonts and backgrounds; `paper` and `orientation` set the page when the page sets none. | Chromium |
 | `render_document` | Markdown to a business document a person will send, such as a quote, a proposal, a report or a letter: a title block on the first page, a sans-serif body, tables with right-aligned amounts, the page number in the footer. PDF, or the HTML page. | pandoc + Chromium |
 | `create_xlsx` | An Excel `.xlsx` workbook built from rows: several sheets, formulas, a bold frozen header, number formats per column, dates as dates. | openpyxl |
+| `inspect_pdf` | A PDF's pages and its AcroForm fields, each with its type, value, page and box, so a received PDF can be filled in place. | pypdf + pdfplumber |
+| `find_text_in_pdf` | Where a word or a run of consecutive words sits on a PDF's pages, in reading order, so something can be placed next to it. | pdfplumber |
+| `fill_pdf_form` | A PDF's AcroForm filled by field name, flattened by default so no editable field is left. | pypdf |
+| `add_to_pdf` | Text or an image drawn on an overlay merged on top of a PDF's original pages: a date, a signature, an initial. | reportlab + pypdf |
+| `render_pdf_page` | One page of a PDF as a PNG, so the person sees the result before it is sent. | pypdfium2 |
 | `convert` | Any pair named by `source_format` and `target_format`, for pairs without a dedicated tool, such as `rtf` to `odt` or `html` to `docx`. Its description lists `docx`, `odt`, `rtf`, `html`, `txt`, `xlsx`, `ods`, `csv`, `pptx` and `odp` for LibreOffice, and `docx`, `odt`, `pptx`, `pdf` and `html` as pandoc targets. | pandoc for `md`/`markdown` sources, LibreOffice otherwise |
 
 Every conversion tool takes exactly one of `input_b64` (the file as base64) or `path` (a

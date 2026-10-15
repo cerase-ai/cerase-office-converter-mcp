@@ -752,6 +752,480 @@ def create_xlsx(sheets: list[Sheet], output_filename: str = "workbook.xlsx", age
     return _deliver(agent_id, filename, _build_workbook(parsed), agent_binding)
 
 
+# ─── Filling and annotating a PDF a person sent ──────────────────
+
+# The bundled handwriting font (SIL Open Font License) sits beside this file,
+# so a test and the image take the same path.
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+HANDWRITING_FONT = os.path.join(FONT_DIR, "MrsSaintDelafield-Regular.ttf")
+HANDWRITING_FONT_NAME = "CeraseHandwriting"
+REGULAR_FONT_NAME = "Helvetica"
+
+# A pixel this bright on every channel is the paper a signature was photographed
+# on, not the signature: `remove_white_background` makes it transparent.
+_WHITE_CUTOFF = 235
+
+# Every coordinate is pdfplumber's: origin at the page's TOP-LEFT, y downward,
+# a box `[x0, top, x1, bottom]`, pages numbered from 1.
+MAX_MATCHES = 50
+
+
+def _load_fonts() -> None:
+    """Register the bundled handwriting font once, on first use."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    if HANDWRITING_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(HANDWRITING_FONT_NAME, HANDWRITING_FONT))
+
+
+def _field_type(field_type, flags) -> str:
+    ft = str(field_type or "")
+    if ft == "/Tx":
+        return "text"
+    if ft == "/Ch":
+        return "choice"
+    if ft == "/Sig":
+        return "signature"
+    if ft == "/Btn":
+        # Bit 15 of /Ff marks a radio group; the rest are checkboxes.
+        return "radio" if int(flags or 0) & (1 << 15) else "checkbox"
+    return ft.lstrip("/") or "unknown"
+
+
+def _field_value(value):
+    if value is None:
+        return None
+    text = str(value)
+    # A button's /V is a PDF name (`/Off`, `/Yes`); the slash is syntax, not data.
+    return text[1:] if text.startswith("/") else text
+
+
+def _widget_fields(reader) -> dict[str, dict]:
+    """Each widget annotation by field name, with its page, box, type and value.
+
+    A field may put /T and /FT on its parent instead of the widget itself; the
+    parent is read for those, the way a viewer resolves them."""
+    found: dict[str, dict] = {}
+    for number, page in enumerate(reader.pages, start=1):
+        mediabox = page.mediabox
+        for annotation in page.get("/Annots", []) or []:
+            annot = annotation.get_object()
+            if annot.get("/Subtype") != "/Widget":
+                continue
+            node = annot
+            name = annot.get("/T")
+            if name is None:
+                parent = annot.get("/Parent")
+                if parent is not None:
+                    node = parent.get_object()
+                    name = node.get("/T")
+            if name is None:
+                continue
+            rect = annot.get("/Rect")
+            box = None
+            if rect is not None:
+                box = [
+                    float(rect[0]),
+                    float(mediabox.top) - float(rect[3]),
+                    float(rect[2]),
+                    float(mediabox.top) - float(rect[1]),
+                ]
+            found[str(name)] = {
+                "page": number,
+                "box": box,
+                "type": _field_type(node.get("/FT"), node.get("/Ff")),
+                "value": _field_value(node.get("/V")),
+            }
+    return found
+
+
+def _pdf_fields(reader) -> list[dict]:
+    """Every AcroForm field, with the page and box of its widget."""
+    widgets = _widget_fields(reader)
+    declared = reader.get_fields() or {}
+    names = list(dict.fromkeys([*declared, *widgets]))
+    fields = []
+    for name in names:
+        widget = widgets.get(name)
+        field = declared.get(name, {})
+        fields.append(
+            {
+                "name": name,
+                "type": (widget or {}).get("type") or _field_type(field.get("/FT"), field.get("/Ff")),
+                "value": widget["value"] if widget else _field_value(field.get("/V")),
+                "page": (widget or {}).get("page"),
+                "box": (widget or {}).get("box"),
+            }
+        )
+    return fields
+
+
+def _find_text_matches(data: bytes, text: str, page: int | None = None) -> list[dict]:
+    """Where `text` sits on the pages, in reading order, at most MAX_MATCHES.
+
+    `text` is matched as a literal, without regard to case, against the page's
+    text with pdfplumber's own search, so a word is found inside a longer word
+    (`Luogo` in `Luogo:______`); `page` (from 1) limits the search to one page."""
+    import pdfplumber
+
+    if not text or not text.strip():
+        raise ValueError("`text` is empty")
+    matches: list[dict] = []
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        total = len(pdf.pages)
+        if page is not None and (page < 1 or page > total):
+            raise ValueError(f"page {page} is out of range; the PDF has {total} page(s)")
+        numbers = [page] if page is not None else range(1, total + 1)
+        for number in numbers:
+            for hit in pdf.pages[number - 1].search(text, regex=False, case=False):
+                matches.append(
+                    {
+                        "page": number,
+                        "box": [hit["x0"], hit["top"], hit["x1"], hit["bottom"]],
+                        "text": hit["text"],
+                    }
+                )
+                if len(matches) >= MAX_MATCHES:
+                    return matches
+    return matches
+
+
+def _fill_pdf_form(data: bytes, fields: dict[str, str], flatten: bool) -> bytes:
+    """Fill AcroForm fields by name; with `flatten`, burn them into the pages
+    and leave no editable field behind."""
+    import pypdf
+    from pypdf.generic import ArrayObject, NameObject
+
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    existing = reader.get_fields() or {}
+    if not existing:
+        raise ValueError("this PDF has no AcroForm fields to fill")
+    unknown = sorted(name for name in fields if name not in existing)
+    if unknown:
+        raise ValueError(
+            "unknown field name(s) " + ", ".join(repr(name) for name in unknown)
+            + "; the form has: " + ", ".join(sorted(existing))
+        )
+    writer = pypdf.PdfWriter()
+    writer.append(reader)
+    # flatten=True draws each field's new appearance into the page content; the
+    # widget annotation and the /AcroForm that make it editable are then removed.
+    writer.update_page_form_field_values(
+        None, dict(fields), flatten=flatten, auto_regenerate=True
+    )
+    if flatten:
+        for page in writer.pages:
+            if "/Annots" in page:
+                kept = ArrayObject(
+                    annotation
+                    for annotation in page["/Annots"]
+                    if annotation.get_object().get("/Subtype") != "/Widget"
+                )
+                if kept:
+                    page[NameObject("/Annots")] = kept
+                else:
+                    del page[NameObject("/Annots")]
+        if "/AcroForm" in writer._root_object:
+            del writer._root_object[NameObject("/AcroForm")]
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+class PdfItem(BaseModel):
+    """One thing `add_to_pdf` draws on a page as an overlay."""
+
+    text: str | None = Field(default=None, description="Text to write. Exactly one of `text`, `image_path` or `image_b64`.")
+    image_path: str | None = Field(default=None, description="A workspace-relative PNG or JPEG. Exactly one of `text`, `image_path` or `image_b64`.")
+    image_b64: str | None = Field(default=None, description="An inline PNG or JPEG as base64. Exactly one of `text`, `image_path` or `image_b64`.")
+    page: int | None = Field(default=None, description="The page to draw on, numbered from 1. Exactly one of `page` or `all_pages`.")
+    all_pages: bool = Field(default=False, description="Draw on every page, such as an initial. Exactly one of `page` or `all_pages`.")
+    x: float | None = Field(default=None, description="Left edge in points from the page's left; use with `y`, or use `anchor`.")
+    y: float | None = Field(default=None, description="Top edge in points from the page's top; use with `x`, or use `anchor`.")
+    anchor: str | None = Field(default=None, description="Text already on the page to place the item against, as `find_text_in_pdf` finds it; use with `anchor_index`, `placement` and `gap`.")
+    anchor_index: int = Field(default=0, description="Which match of `anchor` to use, 0 being the first.")
+    placement: Literal["right", "below", "above"] = Field(default="right", description="Where the item goes relative to `anchor`.")
+    gap: float = Field(default=6.0, description="Points between the item and its `anchor`.")
+    font: Literal["regular", "handwriting"] = Field(default="regular", description="A text item's face: `regular` (Helvetica) or `handwriting` (the bundled script font, for a signature written as a name).")
+    size: float | None = Field(default=None, description="A text item's size in points. Default 11 for `regular`, 26 for `handwriting`.")
+    width: float = Field(default=140.0, description="An image item's width in points; its height keeps the proportions.")
+    remove_white_background: bool = Field(default=True, description="An image item's near-white background becomes transparent, so a scanned signature does not cover the line it sits on.")
+
+
+def _describe_item(index: int, item: PdfItem) -> str:
+    kind = f"text {item.text!r}" if item.text is not None else "image"
+    return f"item {index} ({kind})"
+
+
+def _parse_items(items: list) -> list[PdfItem]:
+    if not items:
+        raise ValueError("`items` is empty; give at least one")
+    parsed = [item if isinstance(item, PdfItem) else PdfItem.model_validate(item) for item in items]
+    for index, item in enumerate(parsed, start=1):
+        label = _describe_item(index, item)
+        given = [item.text is not None, item.image_path is not None, item.image_b64 is not None]
+        if sum(given) != 1:
+            raise ValueError(f"{label}: give exactly one of `text`, `image_path` or `image_b64`")
+        if item.page is None and not item.all_pages:
+            raise ValueError(f"{label}: give `page` or `all_pages`")
+        if item.page is not None and item.all_pages:
+            raise ValueError(f"{label}: give `page` or `all_pages`, not both")
+        has_xy = item.x is not None and item.y is not None
+        if item.anchor is not None and has_xy:
+            raise ValueError(f"{label}: give `x` and `y`, or `anchor`, not both")
+        if item.anchor is None and not has_xy:
+            raise ValueError(f"{label}: give `x` and `y`, or `anchor`")
+        if item.page is not None and item.page < 1:
+            raise ValueError(f"{label}: `page` is numbered from 1, not {item.page}")
+    return parsed
+
+
+def _cut_white(image):
+    """Make a near-white background transparent, keeping any transparency the
+    image already had."""
+    from PIL import ImageChops
+
+    rgba = image.convert("RGBA")
+    red, green, blue, alpha = rgba.split()
+    threshold = lambda channel: channel.point(lambda value: 0 if value >= _WHITE_CUTOFF else 255)
+    # Paper is bright on EVERY channel, so the brightest of the three thresholds
+    # is 0 only then. Taking the darkest instead made a pure-blue stroke
+    # (0, 0, 255) or a red stamp transparent along with the paper.
+    ink = ImageChops.lighter(threshold(red), threshold(green))
+    ink = ImageChops.lighter(ink, threshold(blue))
+    rgba.putalpha(ImageChops.darker(ink, alpha))
+    return rgba
+
+
+def _max_embed_width(width_points: float) -> int:
+    """The pixels a drawing `width_points` wide can show at 300 dpi."""
+    import math
+
+    return math.ceil(float(width_points) / 72.0 * 300.0)
+
+
+def _load_image(item: PdfItem, agent_id: str | None, binding: str):
+    """The item's image as a PIL image: white cut when asked, and downscaled to
+    the pixels its drawn width can show."""
+    from PIL import Image
+
+    if item.image_path is not None:
+        data = _load_workspace_bytes(agent_id, item.image_path, binding)
+    else:
+        data = base64.b64decode(item.image_b64 or "")
+    image = Image.open(io.BytesIO(data))
+    if item.remove_white_background:
+        image = _cut_white(image)
+    else:
+        image = image.convert("RGBA")
+    # A phone photo is many times the pixels the drawing can show; embedded
+    # whole it bloats the PDF. Never upscale.
+    limit = _max_embed_width(item.width)
+    if image.width > limit:
+        height = max(1, round(image.height * limit / image.width))
+        image = image.resize((limit, height), Image.LANCZOS)
+    return image
+
+
+def _font_for(item: PdfItem) -> tuple[str, float]:
+    handwriting = item.font == "handwriting"
+    size = item.size if item.size is not None else (26.0 if handwriting else 11.0)
+    return (HANDWRITING_FONT_NAME if handwriting else REGULAR_FONT_NAME), float(size)
+
+
+def _item_height(item: PdfItem, image) -> float:
+    from reportlab.pdfbase import pdfmetrics
+
+    if item.text is not None:
+        name, size = _font_for(item)
+        return pdfmetrics.getAscent(name, size) - pdfmetrics.getDescent(name, size)
+    width, height = image.size
+    return float(item.width) * height / width
+
+
+def _anchored_position(item: PdfItem, box: list[float], image) -> tuple[float, float]:
+    x0, top, x1, bottom = box
+    if item.placement == "right":
+        return x1 + item.gap, top
+    if item.placement == "below":
+        return x0, bottom + item.gap
+    return x0, top - item.gap - _item_height(item, image)
+
+
+def _draw_item(canvas_obj, item: PdfItem, mediabox, box, image) -> None:
+    x, y = _anchored_position(item, box, image) if item.anchor is not None else (float(item.x), float(item.y))
+    if item.text is not None:
+        from reportlab.pdfbase import pdfmetrics
+
+        name, size = _font_for(item)
+        canvas_obj.setFont(name, size)
+        # reportlab draws from the page's bottom-left with y up; y is measured
+        # from the top, so the baseline sits `ascent` below the item's top.
+        canvas_obj.drawString(x, float(mediabox.height) - y - pdfmetrics.getAscent(name, size), item.text)
+    else:
+        from reportlab.lib.utils import ImageReader
+
+        width, height = image.size
+        drawn = float(item.width) * height / width
+        canvas_obj.drawImage(
+            ImageReader(image),
+            x,
+            float(mediabox.height) - y - drawn,
+            width=float(item.width),
+            height=drawn,
+            mask="auto",
+        )
+
+
+def _overlay_pages(reader, plan: dict[int, list]) -> dict[int, object]:
+    """One reportlab overlay page per touched page, in that page's own size."""
+    import pypdf
+    from pypdf.generic import RectangleObject
+    from reportlab.pdfgen import canvas as pdfcanvas
+
+    overlays: dict[int, object] = {}
+    for number, entries in plan.items():
+        mediabox = reader.pages[number - 1].mediabox
+        buffer = io.BytesIO()
+        page_canvas = pdfcanvas.Canvas(buffer, pagesize=(float(mediabox.width), float(mediabox.height)))
+        # A mediabox that does not start at 0,0: draw in the page's own space and
+        # give the overlay the same box, so pypdf's clip lands where the content is.
+        page_canvas.translate(float(mediabox.left), float(mediabox.bottom))
+        for item, box, image in entries:
+            _draw_item(page_canvas, item, mediabox, box, image)
+        page_canvas.showPage()
+        page_canvas.save()
+        overlay = pypdf.PdfReader(io.BytesIO(buffer.getvalue())).pages[0]
+        overlay.mediabox = RectangleObject(
+            [float(mediabox.left), float(mediabox.bottom), float(mediabox.right), float(mediabox.top)]
+        )
+        overlays[number] = overlay
+    return overlays
+
+
+def _add_to_pdf(data: bytes, items: list, agent_id: str | None, binding: str) -> bytes:
+    """Draw every item on an overlay page and merge it ON TOP of the original;
+    untouched pages are copied as they are."""
+    import pypdf
+
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    total = len(reader.pages)
+    _load_fonts()
+    plan: dict[int, list] = {}
+    for index, item in enumerate(_parse_items(items), start=1):
+        label = _describe_item(index, item)
+        image = None
+        if item.text is None:
+            try:
+                image = _load_image(item, agent_id, binding)
+            except ValueError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — the reason is the diagnosis
+                raise ValueError(f"{label}: cannot read the image ({exc})") from exc
+        pages = list(range(1, total + 1)) if item.all_pages else [item.page]
+        for number in pages:
+            if number > total:
+                raise ValueError(f"{label}: page {number} is out of range; the PDF has {total} page(s)")
+            page = reader.pages[number - 1]
+            rotate = int(page.get("/Rotate", 0) or 0)
+            if rotate % 360:
+                raise ValueError(
+                    f"{label}: page {number} is rotated {rotate}°; only upright pages can be overlaid"
+                )
+            box = None
+            if item.anchor is not None:
+                matches = _find_text_matches(data, item.anchor, page=number)
+                if not matches:
+                    raise ValueError(f"{label}: {item.anchor!r} was not found on page {number}")
+                if item.anchor_index < 0 or item.anchor_index >= len(matches):
+                    raise ValueError(
+                        f"{label}: `anchor_index` is {item.anchor_index} but {item.anchor!r} matches "
+                        f"{len(matches)} time(s) on page {number}"
+                    )
+                box = matches[item.anchor_index]["box"]
+            plan.setdefault(number, []).append((item, box, image))
+
+    overlays = _overlay_pages(reader, plan)
+    writer = pypdf.PdfWriter()
+    for number, page in enumerate(reader.pages, start=1):
+        writer.add_page(page)
+        if number in overlays:
+            writer.pages[-1].merge_page(overlays[number], over=True)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def _render_pdf_page(data: bytes, page: int, scale: float) -> bytes:
+    import pypdfium2 as pdfium
+
+    document = pdfium.PdfDocument(data)
+    total = len(document)
+    if page < 1 or page > total:
+        raise ValueError(f"page {page} is out of range; the PDF has {total} page(s)")
+    image = document[page - 1].render(scale=float(scale)).to_pil()
+    out = io.BytesIO()
+    image.save(out, format="PNG")
+    return out.getvalue()
+
+
+@mcp.tool()
+def inspect_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, agent_binding: str = "") -> dict:
+    """List a PDF's pages and its AcroForm fields, so the assistant can see what a received PDF holds before filling it. Provide `input_b64` OR a workspace `path`.
+
+    Coordinates are PDF points with the origin at the TOP-LEFT of the page and `y` growing downward, so a box is `[x0, top, x1, bottom]`; pages are numbered from 1. Returns `{pages}` with `{number, width, height}` and `{fields}` with `{name, type, value, page, box}`, empty when the PDF has no form."""
+    import pypdf
+
+    reader = pypdf.PdfReader(io.BytesIO(_resolve_input_bytes(input_b64, path, agent_id, agent_binding)))
+    pages = [
+        {"number": number, "width": float(page.mediabox.width), "height": float(page.mediabox.height)}
+        for number, page in enumerate(reader.pages, start=1)
+    ]
+    return {"pages": pages, "fields": _pdf_fields(reader)}
+
+
+@mcp.tool()
+def find_text_in_pdf(text: str, page: int | None = None, input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, agent_binding: str = "") -> dict:
+    """Find a word or any part of a PDF page's text and say where it sits, so an item can be placed against it. Provide `input_b64` OR a workspace `path`. `text` is matched as a literal, without regard to case; `page` (from 1) limits the search to one page.
+
+    Coordinates are PDF points with the origin at the TOP-LEFT of the page and `y` growing downward, so a box is `[x0, top, x1, bottom]`. Returns `{matches}` in reading order, at most 50, each `{page, box, text}`."""
+    data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
+    return {"matches": _find_text_matches(data, text, page)}
+
+
+@mcp.tool()
+def fill_pdf_form(fields: dict[str, str], input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str = "filled.pdf", flatten: bool = True, agent_binding: str = "") -> dict:
+    """Fill a PDF's AcroForm fields by name and return the PDF, without rebuilding it. Provide `input_b64` OR a workspace `path`, and `fields` as `{field_name: value}`. An unknown field name is refused, naming it and the names the form has, and nothing is written.
+
+    With `flatten` (default true) the values are burned into the pages and no editable field is left; set it false to keep the form fillable. The file is written to `outputs/<output_filename>` in your workspace (default `filled.pdf`)."""
+    data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
+    out = _fill_pdf_form(data, fields, flatten)
+    return _deliver(agent_id, output_filename or "filled.pdf", out, agent_binding)
+
+
+@mcp.tool()
+def add_to_pdf(items: list[PdfItem], input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str = "filled.pdf", agent_binding: str = "") -> dict:
+    """Add text or an image over a PDF's original pages without rebuilding them: each item is drawn on an overlay page merged on top, so the page it was sent as stays as it is. Provide `input_b64` OR a workspace `path`, and `items`.
+
+    Coordinates are PDF points with the origin at the TOP-LEFT of the page and `y` growing downward; pages are numbered from 1. An item places one thing — `text`, or an image given by `image_path` (a workspace-relative PNG or JPEG) or `image_b64` — either at `x`,`y` (its top-left) or against an `anchor` already on the page, as `find_text_in_pdf` finds it (`anchor_index`, `placement` of `right`, `below` or `above`, and `gap` points). Set `page`, or `all_pages` for an initial on every page. A signature is the person's image, or their name with `font="handwriting"`; text is `regular` (Helvetica) by default, at `size` (11 regular, 26 handwriting). An image is `width` points wide (default 140, its height keeping the proportions) and by default its near-white background is removed, so a photographed signature does not cover the line it sits on.
+
+    An anchor that is not found, a page out of range, or a rotated page is refused, naming the item and the reason, and nothing is written. Render the result with `render_pdf_page` and show it to the person before it is sent. The file is written to `outputs/<output_filename>` in your workspace (default `filled.pdf`)."""
+    data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
+    out = _add_to_pdf(data, items, agent_id, agent_binding)
+    return _deliver(agent_id, output_filename or "filled.pdf", out, agent_binding)
+
+
+@mcp.tool()
+def render_pdf_page(page: int, input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str = "page.png", scale: float = 2.0, agent_binding: str = "") -> dict:
+    """Render one page of a PDF to a PNG, so the person can see the result of `fill_pdf_form` or `add_to_pdf` before it is sent. Provide `input_b64` OR a workspace `path`, and the page number (from 1).
+
+    `scale` sets the pixel size (default 2.0: twice the page size in points). The PNG is written to `outputs/<output_filename>` in your workspace (default `page.png`)."""
+    data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
+    out = _render_pdf_page(data, page, scale)
+    return _deliver(agent_id, output_filename or "page.png", out, agent_binding)
+
+
 # ─── Catch-all generic converter ─────────────────────────────────
 
 @mcp.tool()

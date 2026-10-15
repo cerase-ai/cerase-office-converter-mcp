@@ -70,6 +70,24 @@ def is_pdf(data: bytes) -> bool:
     return data.startswith(b"%PDF-")
 
 
+def is_png(data: bytes) -> bool:
+    return data.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def build_pdf() -> bytes:
+    """A real PDF with one form field and the word the tools must find."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    pdf.acroForm.textfield(name="nome", x=72, y=height - 120, width=200, height=20, forceBorder=True)
+    pdf.drawString(72, height - 200, "Luogo")
+    pdf.save()
+    return buffer.getvalue()
+
+
 def is_zip_with(data: bytes, member: str) -> bool:
     try:
         return member in zipfile.ZipFile(io.BytesIO(data)).namelist()
@@ -112,12 +130,32 @@ def main() -> int:
         check("convert_xlsx_to_pdf", lambda: server.convert_xlsx_to_pdf(input_b64=b64(xlsx)), is_pdf)
         check("convert_xlsx_to_ods", lambda: server.convert_xlsx_to_ods(input_b64=b64(xlsx)), lambda d: is_zip_with(d, "content.xml"))
 
+    # The PDF tools run on a real PDF built here, the way an assistant's received
+    # file would look: a form field to inspect and fill, a word to find.
+    def check_result(name: str, run, ok) -> dict | None:
+        try:
+            result = run()
+        except Exception as err:  # noqa: BLE001 — every failure is reported by name
+            failed.append(f"{name}: {type(err).__name__}: {str(err)[-300:]}")
+            return None
+        if not ok(result):
+            failed.append(f"{name}: the result is not what was asked for")
+            return None
+        print(f"ok {name}")
+        return result
+
+    pdf = build_pdf()
+    check_result("inspect_pdf", lambda: server.inspect_pdf(input_b64=b64(pdf)), lambda r: any(f["name"] == "nome" for f in r["fields"]))
+    check_result("find_text_in_pdf", lambda: server.find_text_in_pdf(input_b64=b64(pdf), text="Luogo"), lambda r: len(r["matches"]) == 1)
+    check("fill_pdf_form", lambda: server.fill_pdf_form(input_b64=b64(pdf), fields={"nome": "Bari"}), is_pdf)
+    check("add_to_pdf", lambda: server.add_to_pdf(input_b64=b64(pdf), items=[{"text": "Bari", "anchor": "Luogo", "page": 1}]), is_pdf)
+    check("render_pdf_page", lambda: server.render_pdf_page(input_b64=b64(pdf), page=1), is_png)
+
     if failed:
         print("\n".join(f"x  {line}" for line in failed))
         return 1
     print("every tool converted a real file")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
