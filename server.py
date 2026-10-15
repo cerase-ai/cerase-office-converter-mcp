@@ -316,6 +316,11 @@ def _deliver(agent_id: str | None, filename: str, out_bytes: bytes, agent_bindin
     """Write a produced file into the caller's workspace and answer with its
     `{path}` handle; without an agent or a broker, answer with the bytes inline
     (dev, or a caller with no workspace). Mirrors the deck renderer."""
+    # Only the name's last part: an assistant that wrote `outputs/x.png` got
+    # `outputs/outputs/x.png` back, and attached that.
+    filename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    if filename in ("", ".", ".."):
+        raise ValueError("output_filename names no file")
     rel = f"outputs/{filename}"
     if _write_workspace_file(agent_id, rel, out_bytes, agent_binding):
         return {"path": rel, "filename": filename, "size_bytes": len(out_bytes)}

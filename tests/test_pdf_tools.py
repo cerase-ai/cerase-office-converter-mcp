@@ -398,6 +398,18 @@ def test_render_pdf_page_delivers_a_png_the_page_size_times_the_scale():
     assert abs(image.height - A4[1] * 2) <= 2
 
 
+def test_an_output_name_with_a_folder_is_written_once_under_outputs(monkeypatch):
+    # An assistant passed `outputs/x.png`, read back `outputs/outputs/x.png`, and attached that.
+    written = []
+    monkeypatch.setattr(server, "_write_workspace_file",
+                        lambda agent_id, path, data, binding="": written.append(path) or True)
+    data = _b64(_text_pdf([[("One", 72, 700)]]))
+    result = server.render_pdf_page(input_b64=data, page=1, agent_id="7", output_filename="outputs/anteprima.png")
+    assert (result["path"], result["filename"], written) == ("outputs/anteprima.png", "anteprima.png", ["outputs/anteprima.png"])
+    with pytest.raises(ValueError, match="names no file"):
+        server.render_pdf_page(input_b64=data, page=1, agent_id="7", output_filename="outputs/")
+
+
 def test_render_pdf_page_refuses_a_page_out_of_range():
     data = _text_pdf([[("One", 72, 700)]])
     with pytest.raises(ValueError, match="out of range"):
