@@ -367,6 +367,82 @@ def test_a_small_signature_is_not_upscaled():
     assert max(_embedded_image_widths(_out(result))) == 200
 
 
+# ─── what add_to_pdf answers ───
+
+def test_add_to_pdf_answers_where_an_image_landed_and_how_large():
+    data = _text_pdf([[("Firma", 72, 700)]])
+    result = server.add_to_pdf(
+        input_b64=_b64(data),
+        items=[{"image_b64": _b64(_signature_png(200, 80)), "page": 1, "x": 72, "y": 100, "width": 150}],
+    )
+    assert result["filename"] == "filled.pdf"
+    assert result["size_bytes"] > 0
+    assert result["placed"] == [
+        {
+            "item": 1,
+            "page": 1,
+            "kind": "image",
+            "box": [72.0, 100.0, 222.0, 160.0],
+            "width": 150.0,
+            "height": 60.0,
+            "pixels": [200, 80],
+        }
+    ]
+
+
+def test_add_to_pdf_answers_the_box_of_a_text_item():
+    data = _text_pdf([[("One", 72, 700)]])
+    result = server.add_to_pdf(
+        input_b64=_b64(data),
+        items=[{"text": "Bari", "page": 1, "x": 72, "y": 200, "size": 11, "font": "regular"}],
+    )
+    entry = result["placed"][0]
+    assert entry["kind"] == "text"
+    assert entry["box"][0] == 72
+    assert entry["box"][1] == 200
+    assert entry["box"][2] == pytest.approx(72 + pdfmetrics.stringWidth("Bari", "Helvetica", 11), abs=0.01)
+    assert entry["box"][3] > 200
+
+
+def test_add_to_pdf_answers_the_box_of_an_image_placed_against_an_anchor():
+    data = _text_pdf([[("Firma", 72, 700)]])
+    anchor = server.find_text_in_pdf(input_b64=_b64(data), text="Firma")["matches"][0]
+    result = server.add_to_pdf(
+        input_b64=_b64(data),
+        items=[{
+            "image_b64": _b64(_signature_png()),
+            "page": 1,
+            "anchor": "Firma",
+            "placement": "right",
+            "gap": 6,
+        }],
+    )
+    entry = result["placed"][0]
+    assert entry["box"][0] == pytest.approx(anchor["box"][2] + 6, abs=0.01)
+    assert entry["box"][1] == pytest.approx(anchor["box"][1], abs=0.01)
+
+
+def test_add_to_pdf_answers_one_entry_per_page_for_all_pages():
+    data = _text_pdf([[("One", 72, 700)], [("Two", 72, 700)]])
+    result = server.add_to_pdf(
+        input_b64=_b64(data),
+        items=[{"text": "Bozza", "all_pages": True, "x": 72, "y": 100}],
+    )
+    assert [(entry["item"], entry["page"]) for entry in result["placed"]] == [(1, 1), (1, 2)]
+
+
+def test_add_to_pdf_answers_entries_in_item_order():
+    data = _text_pdf([[("One", 72, 700)]])
+    result = server.add_to_pdf(
+        input_b64=_b64(data),
+        items=[
+            {"text": "Primo", "page": 1, "x": 72, "y": 100},
+            {"text": "Secondo", "page": 1, "x": 72, "y": 200},
+        ],
+    )
+    assert [entry["item"] for entry in result["placed"]] == [1, 2]
+
+
 # ─── fill_pdf_form ───────────────────────────────────────────────
 
 def test_fill_pdf_form_fills_a_text_field_and_keeps_it_editable():

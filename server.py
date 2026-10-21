@@ -1011,8 +1011,8 @@ def _max_embed_width(width_points: float) -> int:
 
 
 def _load_image(item: PdfItem, agent_id: str | None, binding: str):
-    """The item's image as a PIL image: white cut when asked, and downscaled to
-    the pixels its drawn width can show."""
+    """The item's image as a PIL image, white cut when asked, downscaled to the
+    pixels its drawn width can show, and the size it had as given."""
     from PIL import Image
 
     if item.image_path is not None:
@@ -1020,6 +1020,7 @@ def _load_image(item: PdfItem, agent_id: str | None, binding: str):
     else:
         data = base64.b64decode(item.image_b64 or "")
     image = Image.open(io.BytesIO(data))
+    pixels = (image.width, image.height)
     if item.remove_white_background:
         image = _cut_white(image)
     else:
@@ -1030,7 +1031,7 @@ def _load_image(item: PdfItem, agent_id: str | None, binding: str):
     if image.width > limit:
         height = max(1, round(image.height * limit / image.width))
         image = image.resize((limit, height), Image.LANCZOS)
-    return image
+    return image, pixels
 
 
 def _font_for(item: PdfItem) -> tuple[str, float]:
@@ -1058,8 +1059,14 @@ def _anchored_position(item: PdfItem, box: list[float], image) -> tuple[float, f
     return x0, top - item.gap - _item_height(item, image)
 
 
+def _item_top_left(item: PdfItem, box, image) -> tuple[float, float]:
+    if item.anchor is not None:
+        return _anchored_position(item, box, image)
+    return float(item.x), float(item.y)
+
+
 def _draw_item(canvas_obj, item: PdfItem, mediabox, box, image) -> None:
-    x, y = _anchored_position(item, box, image) if item.anchor is not None else (float(item.x), float(item.y))
+    x, y = _item_top_left(item, box, image)
     if item.text is not None:
         from reportlab.pdfbase import pdfmetrics
 
@@ -1109,7 +1116,7 @@ def _overlay_pages(reader, plan: dict[int, list]) -> dict[int, object]:
     return overlays
 
 
-def _add_to_pdf(data: bytes, items: list, agent_id: str | None, binding: str) -> bytes:
+def _add_to_pdf(data: bytes, items: list, agent_id: str | None, binding: str) -> tuple[bytes, list]:
     """Draw every item on an overlay page and merge it ON TOP of the original;
     untouched pages are copied as they are."""
     import pypdf
@@ -1118,12 +1125,14 @@ def _add_to_pdf(data: bytes, items: list, agent_id: str | None, binding: str) ->
     total = len(reader.pages)
     _load_fonts()
     plan: dict[int, list] = {}
+    placed: list[dict] = []
     for index, item in enumerate(_parse_items(items), start=1):
         label = _describe_item(index, item)
         image = None
+        pixels = None
         if item.text is None:
             try:
-                image = _load_image(item, agent_id, binding)
+                image, pixels = _load_image(item, agent_id, binding)
             except ValueError:
                 raise
             except Exception as exc:  # noqa: BLE001 — the reason is the diagnosis
@@ -1150,6 +1159,37 @@ def _add_to_pdf(data: bytes, items: list, agent_id: str | None, binding: str) ->
                     )
                 box = matches[item.anchor_index]["box"]
             plan.setdefault(number, []).append((item, box, image))
+            x, top = _item_top_left(item, box, image)
+            if item.text is not None:
+                from reportlab.pdfbase import pdfmetrics
+
+                name, size = _font_for(item)
+                right = x + pdfmetrics.stringWidth(item.text, name, size)
+                bottom = top + pdfmetrics.getAscent(name, size) - pdfmetrics.getDescent(name, size)
+                placed.append({
+                    "item": index,
+                    "page": number,
+                    "kind": "text",
+                    "box": [round(x, 2), round(top, 2), round(right, 2), round(bottom, 2)],
+                })
+            else:
+                pixel_width, pixel_height = pixels
+                drawn_width = float(item.width)
+                drawn_height = drawn_width * pixel_height / pixel_width
+                placed.append({
+                    "item": index,
+                    "page": number,
+                    "kind": "image",
+                    "box": [
+                        round(x, 2),
+                        round(top, 2),
+                        round(x + drawn_width, 2),
+                        round(top + drawn_height, 2),
+                    ],
+                    "width": round(drawn_width, 2),
+                    "height": round(drawn_height, 2),
+                    "pixels": [pixel_width, pixel_height],
+                })
 
     overlays = _overlay_pages(reader, plan)
     writer = pypdf.PdfWriter()
@@ -1159,7 +1199,7 @@ def _add_to_pdf(data: bytes, items: list, agent_id: str | None, binding: str) ->
             writer.pages[-1].merge_page(overlays[number], over=True)
     out = io.BytesIO()
     writer.write(out)
-    return out.getvalue()
+    return out.getvalue(), placed
 
 
 def _render_pdf_page(data: bytes, page: int, scale: float) -> bytes:
@@ -1215,17 +1255,21 @@ def add_to_pdf(items: list[PdfItem], input_b64: str | None = None, path: str | N
 
     Coordinates are PDF points with the origin at the TOP-LEFT of the page and `y` growing downward; pages are numbered from 1. An item places one thing — `text`, or an image given by `image_path` (a workspace-relative PNG or JPEG) or `image_b64` — either at `x`,`y` (its top-left) or against an `anchor` already on the page, as `find_text_in_pdf` finds it (`anchor_index`, `placement` of `right`, `below` or `above`, and `gap` points). Set `page`, or `all_pages` for an initial on every page. A signature is the person's image, or their name with `font="handwriting"`; text is `regular` (Helvetica) by default, at `size` (11 regular, 26 handwriting). An image is `width` points wide (default 140, its height keeping the proportions) and by default its near-white background is removed, so a photographed signature does not cover the line it sits on.
 
+    It answers `{path, filename, size_bytes, placed}`, where `placed` gives for each item on each page `{item, page, kind, box}` in the same points, and for an image its drawn `width` and `height` and its `pixels`. To move or resize an item, change `x`, `y` or `width` from those numbers and from the page rendered with `render_pdf_page`, and never open the image or the PDF with the shell to measure them.
+
     An anchor that is not found, a page out of range, or a rotated page is refused, naming the item and the reason, and nothing is written. Render the result with `render_pdf_page` and show it to the person before it is sent. The file is written to `outputs/<output_filename>` in your workspace (default `filled.pdf`)."""
     data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
-    out = _add_to_pdf(data, items, agent_id, agent_binding)
-    return _deliver(agent_id, output_filename or "filled.pdf", out, agent_binding)
+    out, placed = _add_to_pdf(data, items, agent_id, agent_binding)
+    result = _deliver(agent_id, output_filename or "filled.pdf", out, agent_binding)
+    result["placed"] = placed
+    return result
 
 
 @mcp.tool()
 def render_pdf_page(page: int, input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str = "page.png", scale: float = 2.0, agent_binding: str = "") -> dict:
     """Render one page of a PDF to a PNG, so the person can see the result of `fill_pdf_form` or `add_to_pdf` before it is sent. Provide `input_b64` OR a workspace `path`, and the page number (from 1).
 
-    `scale` sets the pixel size (default 2.0: twice the page size in points). The PNG is written to `outputs/<output_filename>` in your workspace (default `page.png`)."""
+    `scale` sets the pixel size (default 2.0: twice the page size in points); a point at (x, y) is at pixel (x*scale, y*scale) of the PNG, so the box `add_to_pdf` answers can be found on the rendered page. The PNG is written to `outputs/<output_filename>` in your workspace (default `page.png`)."""
     data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
     out = _render_pdf_page(data, page, scale)
     return _deliver(agent_id, output_filename or "page.png", out, agent_binding)
