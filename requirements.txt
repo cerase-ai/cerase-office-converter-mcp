@@ -15,4 +15,4 @@ pypdfium2>=4.30,<6.0
 # add_to_pdf draws the overlay page it merges on top (BSD).
 reportlab>=4.0,<5.0
 # add_to_pdf loads a signature image and cuts its white background (MIT-CMU).
-pillow>=10.0,<13.0
+pillow>=13.0,<14.0
