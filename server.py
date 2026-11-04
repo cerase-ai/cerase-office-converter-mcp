@@ -684,6 +684,88 @@ def _cell_value(value):
     return value, None
 
 
+# A date is day-first and its separators agree, because that is how a sheet
+# written in Italy reads `04/11/2026`; an ISO date is year-first and is already
+# converted by `_cell_value`, so it does not match here.
+_DATE_TEXT = re.compile(r"^(\d{1,2})([/.\-])(\d{1,2})\2(\d{2}|\d{4})$")
+# A number may group thousands and take a decimal part in either convention,
+# but the two separators cannot both be the grouping one.
+_NUMBER_EN = re.compile(r"^-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$")
+_NUMBER_IT = re.compile(r"^-?(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?$")
+
+
+def _looks_like_number(text: str) -> bool:
+    if not text or text[0] == "+":
+        return False
+    body = text[1:] if text[0] == "-" else text
+    # A leading zero is how codes, phone numbers and IBANs start; `0.5` and
+    # `0,5` are still decimal numbers.
+    if len(body) > 1 and body[0] == "0" and body[1].isdigit():
+        return False
+    return bool(_NUMBER_EN.fullmatch(text) or _NUMBER_IT.fullmatch(text))
+
+
+def _classify_text(value: str) -> str | None:
+    """Say whether one string reads as a number or a date, or neither."""
+    text = value.strip()
+    if not text or any(ch.isalpha() for ch in text):
+        return None
+
+    date = _DATE_TEXT.match(text)
+    if date:
+        day, _, month, year = date.groups()
+        shape = "%d/%m/%y" if len(year) == 2 else "%d/%m/%Y"
+        try:
+            datetime.datetime.strptime(f"{day}/{month}/{year}", shape)
+            return "date"
+        except ValueError:
+            pass
+
+    number = text
+    sign = ""
+    if number[:1] in "+-":
+        sign, number = number[0], number[1:].lstrip()
+        if sign == "+":
+            return None
+    if number[:1] in "€$":
+        number = number[1:].lstrip()
+    elif number[-1:] in "€$":
+        number = number[:-1].rstrip()
+    if number.endswith("%"):
+        number = number[:-1].rstrip()
+    # Several space-separated groups are a code or a phone number, not a value.
+    if not number or any(ch.isspace() for ch in number):
+        return None
+    return "number" if _looks_like_number(sign + number) else None
+
+
+def _cells_written_as_text(sheets: list[Sheet]) -> tuple[list[dict], int]:
+    """Name the text cells that will not sum or sort, and count them all."""
+    from openpyxl.utils import get_column_letter
+
+    named: list[dict] = []
+    total = 0
+    for sheet in sheets:
+        for r, row in enumerate(sheet.rows, start=1):
+            if r <= sheet.header_rows:
+                continue
+            for c, raw in enumerate(row, start=1):
+                if not isinstance(raw, str) or raw.startswith("=") or _ISO_DATE.match(raw):
+                    continue
+                reads_as = _classify_text(raw)
+                if reads_as is None:
+                    continue
+                total += 1
+                if len(named) < 50:
+                    named.append({
+                        "sheet": sheet.name,
+                        "cell": f"{get_column_letter(c)}{r}",
+                        "value": raw,
+                        "reads_as": reads_as,
+                    })
+    return named, total
+
+
 def _build_workbook(sheets: list[Sheet]) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
@@ -747,14 +829,24 @@ def _build_workbook(sheets: list[Sheet]) -> bytes:
 def create_xlsx(sheets: list[Sheet], output_filename: str = "workbook.xlsx", agent_id: str | None = None, agent_binding: str = "") -> dict:
     """Create an Excel .xlsx workbook from rows: one or more sheets, real formulas, a bold shaded header frozen at the top, Excel number formats per column, dates stored as dates. The file is written to `outputs/<output_filename>` in your workspace.
 
-    Each sheet is {name, rows, header_rows?, freeze?, column_widths?, number_formats?}. Numbers go in as JSON numbers, not strings, so formulas can add them up.
+    Each sheet is {name, rows, header_rows?, freeze?, column_widths?, number_formats?}. Numbers go in as JSON numbers, not strings, so formulas can add them up. The answer names cells passed as text that read as numbers or dates.
 
     For OpenDocument (.ods) convert the result with `convert_xlsx_to_ods`; for a PDF with `convert_xlsx_to_pdf`."""
     filename = output_filename or "workbook.xlsx"
     if not filename.lower().endswith(".xlsx"):
         filename += ".xlsx"
     parsed = [s if isinstance(s, Sheet) else Sheet.model_validate(s) for s in sheets]
-    return _deliver(agent_id, filename, _build_workbook(parsed), agent_binding)
+    result = _deliver(agent_id, filename, _build_workbook(parsed), agent_binding)
+    named, total = _cells_written_as_text(parsed)
+    if named:
+        result["cells_written_as_text"] = named
+        result["cells_written_as_text_total"] = total
+        result["note"] = (
+            "cells_written_as_text lists cells passed as text that read as numbers or dates. "
+            "Send numbers as JSON numbers and dates as YYYY-MM-DD so formulas and sorting work, "
+            "then call create_xlsx again with them corrected."
+        )
+    return result
 
 
 # ─── Filling and annotating a PDF a person sent ──────────────────
