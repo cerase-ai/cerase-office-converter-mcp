@@ -31,6 +31,7 @@ import pytest
 import server
 
 AGENT = "agent-7"
+BINDING = "binding-token"
 
 QUOTE = """---
 title: Preventivo per il rinnovo del sito
@@ -158,7 +159,7 @@ def binaries(monkeypatch):
 @pytest.fixture
 def broker(monkeypatch):
     monkeypatch.setenv("CERASE_CONTROL_PLANE_URL", "http://cerase-control-plane")
-    monkeypatch.setenv("CERASE_INTERNAL_SECRET", "internal-secret")
+    monkeypatch.delenv("CERASE_INTERNAL_SECRET", raising=False)
     fake = FakeBroker()
     monkeypatch.setattr(server.urllib.request, "urlopen", fake)
     return fake
@@ -300,7 +301,7 @@ def test_input_must_be_given_exactly_once(binaries, no_broker):
 
 def test_a_pdf_goes_to_the_workspace_with_its_format_and_page_count(binaries, broker):
     binaries.pages = 3
-    result = server.render_document(input_b64=_b64(QUOTE), agent_id=AGENT, output_filename="preventivo.pdf")
+    result = server.render_document(input_b64=_b64(QUOTE), agent_id=AGENT, output_filename="preventivo.pdf", agent_binding=BINDING)
     assert result == {
         "path": "outputs/preventivo.pdf",
         "filename": "preventivo.pdf",
@@ -321,7 +322,7 @@ def test_without_a_broker_the_pdf_comes_back_inline(binaries, no_broker):
 
 
 def test_an_html_name_returns_the_page_and_never_prints_it(binaries, broker):
-    result = server.render_document(input_b64=_b64(QUOTE), agent_id=AGENT, output_filename="preventivo.html")
+    result = server.render_document(input_b64=_b64(QUOTE), agent_id=AGENT, output_filename="preventivo.html", agent_binding=BINDING)
     assert result["path"] == "outputs/preventivo.html"
     assert result["format"] == "html"
     assert "pages" not in result

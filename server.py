@@ -100,18 +100,15 @@ def _load_workspace_bytes(agent_id: str | None, path: str, binding: str = "") ->
         pass  # not a safe local path → let the control-plane re-guard + serve
 
     cp = os.environ.get("CERASE_CONTROL_PLANE_URL", "").rstrip("/")
-    secret = os.environ.get("CERASE_INTERNAL_SECRET", "")
-    if not agent_id or not cp or not secret:
+    if not agent_id or not cp or not binding:
         raise ValueError(
             "workspace `path` given but no local file and no control-plane "
-            "configured (agent_id / CERASE_CONTROL_PLANE_URL / CERASE_INTERNAL_SECRET)"
+            "configured (agent_id / CERASE_CONTROL_PLANE_URL / agent_binding)"
         )
     qs = urlencode({"path": path})
-    # M-SEC-TOKEN-BINDING-1: the broker requires the calling agent's binding
-    # (gateway-injected tool arg) besides the shared bearer.
-    headers = {"Authorization": f"Bearer {secret}"}
-    if binding:
-        headers["X-Cerase-Agent-Binding"] = binding
+    # The broker scopes the call to the calling agent's binding, a
+    # gateway-injected tool arg.
+    headers = {"X-Cerase-Agent-Binding": binding}
     req = urllib.request.Request(
         f"{cp}/api/internal/workspace-file/{agent_id}?{qs}",
         headers=headers,
@@ -130,16 +127,17 @@ def _write_workspace_file(
     then falls back to base64 (dev / a non-agent call).
     """
     cp = os.environ.get("CERASE_CONTROL_PLANE_URL", "").rstrip("/")
-    secret = os.environ.get("CERASE_INTERNAL_SECRET", "")
-    if not agent_id or not cp or not secret:
+    if not agent_id or not cp:
         return False
+    if not binding:
+        raise ValueError(
+            "workspace write needs the calling agent's binding (agent_binding)"
+        )
     qs = urlencode({"path": path})
     headers = {
-        "Authorization": f"Bearer {secret}",
+        "X-Cerase-Agent-Binding": binding,
         "Content-Type": "application/octet-stream",
     }
-    if binding:
-        headers["X-Cerase-Agent-Binding"] = binding
     req = urllib.request.Request(
         f"{cp}/api/internal/workspace-file/{agent_id}?{qs}",
         data=data,

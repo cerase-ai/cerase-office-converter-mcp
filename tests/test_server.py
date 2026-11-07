@@ -8,7 +8,7 @@ still reads as a successful conversion — so the large-artifact case is asserte
 here byte for byte, not by size alone.
 
 The branch between a handle and inline base64 is the BROKER CONFIGURATION
-(agent_id + control-plane URL + internal secret), never the artifact's size.
+(agent_id + control-plane URL + agent binding), never the artifact's size.
 Both sizes are covered below in both configurations so that a future size
 threshold cannot be introduced unnoticed.
 
@@ -133,7 +133,7 @@ def broker(monkeypatch):
 @pytest.fixture
 def broker_configured(monkeypatch):
     monkeypatch.setenv("CERASE_CONTROL_PLANE_URL", "http://cerase-control-plane")
-    monkeypatch.setenv("CERASE_INTERNAL_SECRET", "internal-secret")
+    monkeypatch.delenv("CERASE_INTERNAL_SECRET", raising=False)
 
 
 @pytest.fixture
@@ -172,6 +172,7 @@ def test_broker_receives_every_byte_of_a_large_artifact(
         input_b64=base64.b64encode(b"docx bytes").decode(),
         agent_id=AGENT,
         output_filename="report.pdf",
+        agent_binding=BINDING,
     )
     req = broker.last
     assert req.get_method() == "PUT"
@@ -180,7 +181,7 @@ def test_broker_receives_every_byte_of_a_large_artifact(
     assert req.data == LARGE
 
 
-def test_broker_request_carries_the_internal_secret_and_the_agent_binding(
+def test_broker_request_carries_the_agent_binding_and_no_authorization(
     binaries, broker, broker_configured
 ):
     server.convert_docx_to_pdf(
@@ -190,9 +191,43 @@ def test_broker_request_carries_the_internal_secret_and_the_agent_binding(
         agent_binding=BINDING,
     )
     h = headers_of(broker.last)
-    assert h["authorization"] == "Bearer internal-secret"
+    assert "authorization" not in h
     assert h["x-cerase-agent-binding"] == BINDING
     assert h["content-type"] == "application/octet-stream"
+
+
+def test_a_broker_call_works_with_the_internal_secret_unset(
+    binaries, broker, broker_configured
+):
+    result = server.convert_docx_to_pdf(
+        input_b64=base64.b64encode(b"docx bytes").decode(),
+        agent_id=AGENT,
+        output_filename="report.pdf",
+        agent_binding=BINDING,
+    )
+    assert result["path"] == "outputs/report.pdf"
+    assert broker.requests
+
+
+def test_a_workspace_write_without_a_binding_is_refused_before_the_network(
+    binaries, broker, broker_configured
+):
+    with pytest.raises(ValueError, match="agent_binding"):
+        server.convert_docx_to_pdf(
+            input_b64=base64.b64encode(b"docx bytes").decode(),
+            agent_id=AGENT,
+            output_filename="report.pdf",
+        )
+    assert broker.requests == []
+
+
+def test_a_workspace_read_without_a_binding_is_refused_before_the_network(
+    monkeypatch, tmp_path, broker, broker_configured
+):
+    monkeypatch.setenv("CERASE_TOOL_WORKSPACE_ROOT", str(tmp_path))
+    with pytest.raises(ValueError, match="agent_binding"):
+        server._load_workspace_bytes(AGENT, str(tmp_path / "absent.docx"))
+    assert broker.requests == []
 
 
 def test_a_small_artifact_takes_the_same_handle_path(
@@ -206,6 +241,7 @@ def test_a_small_artifact_takes_the_same_handle_path(
         input_b64=base64.b64encode(b"docx bytes").decode(),
         agent_id=AGENT,
         output_filename="note.pdf",
+        agent_binding=BINDING,
     )
     assert result["path"] == "outputs/note.pdf"
     assert "contents_base64" not in result
@@ -243,7 +279,9 @@ def test_a_call_with_no_agent_id_falls_back_inline(
 
 def test_binary_sources_route_through_libreoffice(binaries, broker, broker_configured):
     server.convert_xlsx_to_ods(
-        input_b64=base64.b64encode(b"xlsx bytes").decode(), agent_id=AGENT
+        input_b64=base64.b64encode(b"xlsx bytes").decode(),
+        agent_id=AGENT,
+        agent_binding=BINDING,
     )
     argv = binaries.argv_for(server.SOFFICE)
     assert "--headless" in argv
@@ -252,7 +290,9 @@ def test_binary_sources_route_through_libreoffice(binaries, broker, broker_confi
 
 def test_markdown_to_pdf_asks_pandoc_for_xelatex(binaries, broker, broker_configured):
     server.convert_md_to_pdf(
-        input_b64=base64.b64encode(b"# title").decode(), agent_id=AGENT
+        input_b64=base64.b64encode(b"# title").decode(),
+        agent_id=AGENT,
+        agent_binding=BINDING,
     )
     assert "--pdf-engine=xelatex" in binaries.argv_for(server.PANDOC)
 
@@ -262,6 +302,7 @@ def test_a_reference_doc_reaches_pandoc_as_a_file(binaries, broker, broker_confi
         input_b64=base64.b64encode(b"# title").decode(),
         reference_doc_b64=base64.b64encode(b"template docx").decode(),
         agent_id=AGENT,
+        agent_binding=BINDING,
     )
     argv = binaries.argv_for(server.PANDOC)
     ref = [a for a in argv if a.startswith("--reference-doc=")]

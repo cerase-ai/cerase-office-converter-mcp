@@ -54,9 +54,9 @@ Workspace access goes through the Cerase control-plane: a `path` is read
 locally when it exists under `CERASE_TOOL_WORKSPACE_ROOT`, otherwise with
 `GET /api/internal/workspace-file/<agent_id>?path=…`; the result is written to
 `outputs/<filename>` with `PUT` on the same endpoint. Both requests present
-`CERASE_INTERNAL_SECRET` as a bearer and `agent_binding` as
-`X-Cerase-Agent-Binding`. When `agent_id`, `CERASE_CONTROL_PLANE_URL` or
-`CERASE_INTERNAL_SECRET` is missing, the result comes back inline as base64.
+`agent_binding` as `X-Cerase-Agent-Binding`. When `agent_id` or
+`CERASE_CONTROL_PLANE_URL` is missing, the result comes back inline as base64;
+a call with both but no `agent_binding` is refused.
 
 ### `render_document`
 
@@ -110,7 +110,6 @@ are the three files in `document/`.
 | Variable | Default | Purpose |
 |---|---|---|
 | `CERASE_CONTROL_PLANE_URL` | none | Control-plane base URL for reading `path` inputs and writing results into the workspace. |
-| `CERASE_INTERNAL_SECRET` | none | Bearer token for those requests. |
 | `CERASE_TOOL_WORKSPACE_ROOT` | `/workspace` | Directory a `path` is read from locally; a path resolving outside it is never opened. |
 
 ## Installation

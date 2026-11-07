@@ -30,6 +30,7 @@ from openpyxl import load_workbook
 import server
 
 AGENT = "agent-7"
+BINDING = "binding-token"
 
 
 class FakeBinaries:
@@ -94,7 +95,7 @@ def binaries(monkeypatch):
 @pytest.fixture
 def broker(monkeypatch):
     monkeypatch.setenv("CERASE_CONTROL_PLANE_URL", "http://cerase-control-plane")
-    monkeypatch.setenv("CERASE_INTERNAL_SECRET", "internal-secret")
+    monkeypatch.delenv("CERASE_INTERNAL_SECRET", raising=False)
     fake = FakeBroker()
     monkeypatch.setattr(server.urllib.request, "urlopen", fake)
     return fake
@@ -117,6 +118,7 @@ def test_markdown_becomes_a_pptx_through_pandoc(binaries, broker):
         input_b64=_b64("# Cover\n\n## Slide\n\n- one\n"),
         agent_id=AGENT,
         output_filename="q3.pptx",
+        agent_binding=BINDING,
     )
     argv = binaries.argv_for(server.PANDOC)
     assert argv[argv.index("-o") + 1].endswith(".pptx")
@@ -128,6 +130,7 @@ def test_a_pptx_template_reaches_pandoc(binaries, broker):
         input_b64=_b64("# Cover\n"),
         reference_doc_b64=base64.b64encode(b"template pptx").decode(),
         agent_id=AGENT,
+        agent_binding=BINDING,
     )
     ref = [a for a in binaries.argv_for(server.PANDOC) if a.startswith("--reference-doc=")]
     assert len(ref) == 1 and ref[0].endswith("reference.pptx")
@@ -139,7 +142,7 @@ PAGE = "<!doctype html><html><head><style>.grid{display:grid}</style></head><bod
 
 
 def test_html_becomes_a_pdf_through_chromium_and_not_libreoffice(binaries, broker):
-    result = server.convert_html_to_pdf(input_b64=_b64(PAGE), agent_id=AGENT, output_filename="landing.pdf")
+    result = server.convert_html_to_pdf(input_b64=_b64(PAGE), agent_id=AGENT, output_filename="landing.pdf", agent_binding=BINDING)
     argv = binaries.argv_for(server.CHROMIUM)
     assert "--headless" in argv
     assert any(a.startswith("--print-to-pdf=") for a in argv)
@@ -148,7 +151,7 @@ def test_html_becomes_a_pdf_through_chromium_and_not_libreoffice(binaries, broke
 
 
 def test_the_page_size_is_set_before_the_pages_own_css(binaries, broker):
-    server.convert_html_to_pdf(input_b64=_b64(PAGE), agent_id=AGENT, paper="letter", orientation="landscape")
+    server.convert_html_to_pdf(input_b64=_b64(PAGE), agent_id=AGENT, paper="letter", orientation="landscape", agent_binding=BINDING)
     html = binaries.seen_html
     injected = html.index("size: letter landscape")
     # Before the page's own <style>, so a page that sets its own @page wins.
@@ -158,7 +161,7 @@ def test_the_page_size_is_set_before_the_pages_own_css(binaries, broker):
 
 
 def test_a_page_with_no_head_still_gets_a_size(binaries, broker):
-    server.convert_html_to_pdf(input_b64=_b64("<p>bare</p>"), agent_id=AGENT)
+    server.convert_html_to_pdf(input_b64=_b64("<p>bare</p>"), agent_id=AGENT, agent_binding=BINDING)
     assert "size: A4 portrait" in binaries.seen_html
     assert "<p>bare</p>" in binaries.seen_html
 
@@ -171,7 +174,7 @@ def test_html_to_pdf_refuses_an_unknown_paper_or_orientation(binaries, broker):
 
 
 def test_html_to_pdf_names_the_output_after_the_input_when_no_name_is_given(binaries, broker):
-    result = server.convert_html_to_pdf(input_b64=_b64(PAGE), agent_id=AGENT)
+    result = server.convert_html_to_pdf(input_b64=_b64(PAGE), agent_id=AGENT, agent_binding=BINDING)
     assert result["filename"].endswith(".pdf")
 
 
@@ -237,7 +240,7 @@ def test_a_sheet_without_a_header_is_not_frozen(no_broker):
 
 
 def test_a_workbook_goes_to_the_workspace_as_a_path(broker):
-    result = server.create_xlsx(sheets=[{"name": "S", "rows": [["a"], [1]]}], agent_id=AGENT, output_filename="s.xlsx")
+    result = server.create_xlsx(sheets=[{"name": "S", "rows": [["a"], [1]]}], agent_id=AGENT, output_filename="s.xlsx", agent_binding=BINDING)
     assert result["path"] == "outputs/s.xlsx"
     assert "contents_base64" not in result
     assert broker.requests[-1].get_method() == "PUT"
@@ -262,5 +265,5 @@ def test_the_output_name_gets_its_extension(no_broker):
 
 
 def test_chromium_prints_no_header_or_footer_of_its_own(binaries, broker):
-    server.convert_html_to_pdf(input_b64=_b64(PAGE), agent_id=AGENT)
+    server.convert_html_to_pdf(input_b64=_b64(PAGE), agent_id=AGENT, agent_binding=BINDING)
     assert "--no-pdf-header-footer" in binaries.argv_for(server.CHROMIUM)
