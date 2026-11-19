@@ -271,6 +271,8 @@ def _do_conversion(
     reference_doc_path: str | None = None,
     agent_binding: str = "",
 ) -> dict:
+    if output_filename:
+        output_filename = _output_name(output_filename)
     work = tempfile.mkdtemp(prefix="cerase-office-", dir="/tmp")
     try:
         in_path = os.path.join(work, f"input.{source_ext}")
@@ -310,15 +312,33 @@ def _do_conversion(
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _output_name(name: str) -> str:
+    """The bare file name `output_filename` names, written under `outputs/`.
+
+    A caller that passes a path is refused, naming the file it meant: keeping
+    only the last path part made the answer name a file the caller had not
+    asked for."""
+    original = name
+    if name.startswith("outputs/"):
+        name = name[len("outputs/"):]
+    if name in ("", ".", ".."):
+        raise ValueError("output_filename names no file")
+    if "/" in name or "\\" in name or original.startswith("/"):
+        last = re.split(r"[/\\]", original)[-1]
+        if last in ("", ".", ".."):
+            raise ValueError("output_filename names no file")
+        raise ValueError(
+            f'output_filename is a file name: the file is written to outputs/{last}. '
+            f'Call again with "{last}".'
+        )
+    return name
+
+
 def _deliver(agent_id: str | None, filename: str, out_bytes: bytes, agent_binding: str = "") -> dict:
     """Write a produced file into the caller's workspace and answer with its
     `{path}` handle; without an agent or a broker, answer with the bytes inline
     (dev, or a caller with no workspace). Mirrors the deck renderer."""
-    # Only the name's last part: an assistant that wrote `outputs/x.png` got
-    # `outputs/outputs/x.png` back, and attached that.
-    filename = filename.replace("\\", "/").rsplit("/", 1)[-1]
-    if filename in ("", ".", ".."):
-        raise ValueError("output_filename names no file")
+    filename = _output_name(filename)
     rel = f"outputs/{filename}"
     if _write_workspace_file(agent_id, rel, out_bytes, agent_binding):
         return {"path": rel, "filename": filename, "size_bytes": len(out_bytes)}
@@ -350,61 +370,61 @@ def _convert_tool(
 
 @mcp.tool()
 def convert_docx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert a Word .docx → PDF. Provide `input_b64` OR a workspace `path`."""
+    """Convert a Word .docx → PDF. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("docx", "pdf", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_docx_to_odt(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert a Word .docx → LibreOffice .odt. Provide `input_b64` OR a workspace `path`."""
+    """Convert a Word .docx → LibreOffice .odt. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("docx", "odt", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_odt_to_docx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert a LibreOffice .odt → Word .docx. Provide `input_b64` OR a workspace `path`."""
+    """Convert a LibreOffice .odt → Word .docx. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("odt", "docx", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_pptx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert a PowerPoint .pptx → PDF. Provide `input_b64` OR a workspace `path`."""
+    """Convert a PowerPoint .pptx → PDF. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("pptx", "pdf", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_pptx_to_odp(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert a PowerPoint .pptx → LibreOffice .odp. Provide `input_b64` OR a workspace `path`."""
+    """Convert a PowerPoint .pptx → LibreOffice .odp. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("pptx", "odp", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_odp_to_pptx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert a LibreOffice .odp → PowerPoint .pptx. Provide `input_b64` OR a workspace `path`."""
+    """Convert a LibreOffice .odp → PowerPoint .pptx. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("odp", "pptx", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_xlsx_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert an Excel .xlsx → PDF. Provide `input_b64` OR a workspace `path`."""
+    """Convert an Excel .xlsx → PDF. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("xlsx", "pdf", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_xlsx_to_ods(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert an Excel .xlsx → LibreOffice .ods. Provide `input_b64` OR a workspace `path`."""
+    """Convert an Excel .xlsx → LibreOffice .ods. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("xlsx", "ods", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_ods_to_xlsx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert a LibreOffice .ods → Excel .xlsx. Provide `input_b64` OR a workspace `path`."""
+    """Convert a LibreOffice .ods → Excel .xlsx. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("ods", "xlsx", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
 @mcp.tool()
 def convert_md_to_pdf(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, agent_binding: str = "") -> dict:
-    """Convert plain markdown → PDF via pandoc + xelatex. Provide `input_b64` OR a workspace `path`."""
+    """Convert plain markdown → PDF via pandoc + xelatex. Provide `input_b64` OR a workspace `path`. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("md", "pdf", input_b64, path, agent_id, output_filename, agent_binding=agent_binding)
 
 
@@ -412,7 +432,7 @@ def convert_md_to_pdf(input_b64: str | None = None, path: str | None = None, age
 def convert_md_to_docx(input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str | None = None, reference_doc_b64: str | None = None, reference_doc_path: str | None = None, agent_binding: str = "") -> dict:
     """Convert plain markdown → Word .docx via pandoc. Provide `input_b64` OR a workspace `path`.
 
-    Optionally style the .docx from a template document (pandoc --reference-doc): pass it by value as `reference_doc_b64` (inline base64 of a .docx) OR by reference as `reference_doc_path` (a workspace file — use this for templates too big to inline, e.g. embedded fonts/branding)."""
+    Optionally style the .docx from a template document (pandoc --reference-doc): pass it by value as `reference_doc_b64` (inline base64 of a .docx) OR by reference as `reference_doc_path` (a workspace file — use this for templates too big to inline, e.g. embedded fonts/branding). `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("md", "docx", input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
 
 
@@ -422,7 +442,7 @@ def convert_md_to_pptx(input_b64: str | None = None, path: str | None = None, ag
 
     Slides follow pandoc's rules: a YAML block with `title` (and optionally `subtitle`, `author`, `date`) makes the title slide; each `## heading` starts a slide; a line holding only `---` also starts one; `- ` bullets, tables and images become slide content; a `::: notes` block becomes the slide's speaker notes.
 
-    Optionally style the slides from a template .pptx (pandoc --reference-doc): pass it by value as `reference_doc_b64` OR by reference as `reference_doc_path` (a workspace file)."""
+    Optionally style the slides from a template .pptx (pandoc --reference-doc): pass it by value as `reference_doc_b64` OR by reference as `reference_doc_path` (a workspace file). `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
     return _convert_tool("md", "pptx", input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
 
 
@@ -547,7 +567,11 @@ def convert_html_to_pdf(input_b64: str | None = None, path: str | None = None, a
 
     `paper` is A4 (default), A3, A5, letter or legal; `orientation` is portrait (default) or landscape. A page that declares its own `@page` size keeps it.
 
-    Only the HTML file is read: an image or stylesheet it names by a relative path is not found, so put images inline as `data:` URIs or link them by https URL."""
+    Only the HTML file is read: an image or stylesheet it names by a relative path is not found, so put images inline as `data:` URIs or link them by https URL.
+
+    `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives."""
+    if output_filename:
+        output_filename = _output_name(output_filename)
     page_css = _page_box(paper, orientation, _PAPERS)
     html = _resolve_input_bytes(input_b64, path, agent_id, agent_binding).decode("utf-8", errors="replace")
     out_bytes = _chromium_pdf(_with_page_policy(_with_page_css(html, page_css)))
@@ -632,9 +656,9 @@ def render_document(input_b64: str | None = None, path: str | None = None, outpu
 
     `paper` is A4 (default) or letter; `orientation` is portrait (default) or landscape. `template_css` is CSS added after the built-in stylesheet, for brand colours and fonts: set `--doc-accent` (title, headings, rules) and `--doc-font` on `:root`, or override any rule. `template_path` names a CSS file in your workspace instead, and is ignored when `template_css` is given.
 
-    The file is written to `outputs/<output_filename>` in your workspace (default `document.pdf`); a name ending in `.html` returns the HTML page instead of the PDF. Returns `{path, filename, size_bytes, format, pages}`, where `pages` is the PDF's page count and is absent for HTML."""
+    `output_filename` is a file name, written under `outputs/` (default `document.pdf`); attach the `path` the answer gives. A name ending in `.html` returns the HTML page instead of the PDF. Returns `{path, filename, size_bytes, format, pages}`, where `pages` is the PDF's page count and is absent for HTML."""
+    filename = _output_name(output_filename) if output_filename else "document.pdf"
     page_css = _page_box(paper, orientation, _DOCUMENT_PAPERS)
-    filename = output_filename or "document.pdf"
     as_html = filename.lower().endswith((".html", ".htm"))
     if not as_html and not filename.lower().endswith(".pdf"):
         filename += ".pdf"
@@ -825,12 +849,12 @@ def _build_workbook(sheets: list[Sheet]) -> bytes:
 
 @mcp.tool()
 def create_xlsx(sheets: list[Sheet], output_filename: str = "workbook.xlsx", agent_id: str | None = None, agent_binding: str = "") -> dict:
-    """Create an Excel .xlsx workbook from rows: one or more sheets, real formulas, a bold shaded header frozen at the top, Excel number formats per column, dates stored as dates. The file is written to `outputs/<output_filename>` in your workspace.
+    """Create an Excel .xlsx workbook from rows: one or more sheets, real formulas, a bold shaded header frozen at the top, Excel number formats per column, dates stored as dates. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives.
 
     Each sheet is {name, rows, header_rows?, freeze?, column_widths?, number_formats?}. Numbers go in as JSON numbers, not strings, so formulas can add them up. The answer names cells passed as text that read as numbers or dates.
 
     For OpenDocument (.ods) convert the result with `convert_xlsx_to_ods`; for a PDF with `convert_xlsx_to_pdf`."""
-    filename = output_filename or "workbook.xlsx"
+    filename = _output_name(output_filename) if output_filename else "workbook.xlsx"
     if not filename.lower().endswith(".xlsx"):
         filename += ".xlsx"
     parsed = [s if isinstance(s, Sheet) else Sheet.model_validate(s) for s in sheets]
@@ -1333,10 +1357,11 @@ def find_text_in_pdf(text: str, page: int | None = None, input_b64: str | None =
 def fill_pdf_form(fields: dict[str, str], input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str = "filled.pdf", flatten: bool = True, agent_binding: str = "") -> dict:
     """Fill a PDF's AcroForm fields by name and return the PDF, without rebuilding it. Provide `input_b64` OR a workspace `path`, and `fields` as `{field_name: value}`. An unknown field name is refused, naming it and the names the form has, and nothing is written.
 
-    With `flatten` (default true) the values are burned into the pages and no editable field is left; set it false to keep the form fillable. The file is written to `outputs/<output_filename>` in your workspace (default `filled.pdf`)."""
+    With `flatten` (default true) the values are burned into the pages and no editable field is left; set it false to keep the form fillable. `output_filename` is a file name, written under `outputs/` (default `filled.pdf`); attach the `path` the answer gives."""
+    filename = _output_name(output_filename) if output_filename else "filled.pdf"
     data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
     out = _fill_pdf_form(data, fields, flatten)
-    return _deliver(agent_id, output_filename or "filled.pdf", out, agent_binding)
+    return _deliver(agent_id, filename, out, agent_binding)
 
 
 @mcp.tool()
@@ -1347,10 +1372,11 @@ def add_to_pdf(items: list[PdfItem], input_b64: str | None = None, path: str | N
 
     It answers `{path, filename, size_bytes, placed}`, where `placed` gives for each item on each page `{item, page, kind, box}` in the same points, and for an image its drawn `width` and `height` and its `pixels`. To move or resize an item, change `x`, `y` or `width` from those numbers and from the page rendered with `render_pdf_page`, and never open the image or the PDF with the shell to measure them.
 
-    An anchor that is not found, a page out of range, or a rotated page is refused, naming the item and the reason, and nothing is written. Render the result with `render_pdf_page` and show it to the person before it is sent. The file is written to `outputs/<output_filename>` in your workspace (default `filled.pdf`)."""
+    An anchor that is not found, a page out of range, or a rotated page is refused, naming the item and the reason, and nothing is written. Render the result with `render_pdf_page` and show it to the person before it is sent. `output_filename` is a file name, written under `outputs/` (default `filled.pdf`); attach the `path` the answer gives."""
+    filename = _output_name(output_filename) if output_filename else "filled.pdf"
     data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
     out, placed = _add_to_pdf(data, items, agent_id, agent_binding)
-    result = _deliver(agent_id, output_filename or "filled.pdf", out, agent_binding)
+    result = _deliver(agent_id, filename, out, agent_binding)
     result["placed"] = placed
     return result
 
@@ -1359,10 +1385,11 @@ def add_to_pdf(items: list[PdfItem], input_b64: str | None = None, path: str | N
 def render_pdf_page(page: int, input_b64: str | None = None, path: str | None = None, agent_id: str | None = None, output_filename: str = "page.png", scale: float = 2.0, agent_binding: str = "") -> dict:
     """Render one page of a PDF to a PNG, so the person can see the result of `fill_pdf_form` or `add_to_pdf` before it is sent. Provide `input_b64` OR a workspace `path`, and the page number (from 1).
 
-    `scale` sets the pixel size (default 2.0: twice the page size in points); a point at (x, y) is at pixel (x*scale, y*scale) of the PNG, so the box `add_to_pdf` answers can be found on the rendered page. The PNG is written to `outputs/<output_filename>` in your workspace (default `page.png`)."""
+    `scale` sets the pixel size (default 2.0: twice the page size in points); a point at (x, y) is at pixel (x*scale, y*scale) of the PNG, so the box `add_to_pdf` answers can be found on the rendered page. `output_filename` is a file name, written under `outputs/` (default `page.png`); attach the `path` the answer gives."""
+    filename = _output_name(output_filename) if output_filename else "page.png"
     data = _resolve_input_bytes(input_b64, path, agent_id, agent_binding)
     out = _render_pdf_page(data, page, scale)
-    return _deliver(agent_id, output_filename or "page.png", out, agent_binding)
+    return _deliver(agent_id, filename, out, agent_binding)
 
 
 # ─── Catch-all generic converter ─────────────────────────────────
@@ -1383,7 +1410,7 @@ def convert(
 
     Supported via LibreOffice: docx/odt/rtf/html/txt/xlsx/ods/csv/pptx/odp. Supported via pandoc: md/markdown sources (target = docx/odt/pptx/pdf/html). For a designed HTML page to PDF use `convert_html_to_pdf`, which prints through a browser.
 
-    For a markdown source going to docx/odt/pptx you may style the output from a template document (pandoc --reference-doc): pass `reference_doc_b64` (inline base64) OR `reference_doc_path` (a workspace file, for templates too big to inline). It does not apply to LibreOffice conversions or to PDF output.
+    For a markdown source going to docx/odt/pptx you may style the output from a template document (pandoc --reference-doc): pass `reference_doc_b64` (inline base64) OR `reference_doc_path` (a workspace file, for templates too big to inline). It does not apply to LibreOffice conversions or to PDF output. `output_filename` is a file name, written under `outputs/`; attach the `path` the answer gives.
     """
     return _convert_tool(source_format, target_format, input_b64, path, agent_id, output_filename, reference_doc_b64=reference_doc_b64, reference_doc_path=reference_doc_path, agent_binding=agent_binding)
 

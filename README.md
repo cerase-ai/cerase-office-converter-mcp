@@ -33,7 +33,8 @@ source through LibreOffice in headless mode. It calls no model.
 | `convert` | Any pair named by `source_format` and `target_format`, for pairs without a dedicated tool, such as `rtf` to `odt` or `html` to `docx`. Its description lists `docx`, `odt`, `rtf`, `html`, `txt`, `xlsx`, `ods`, `csv`, `pptx` and `odp` for LibreOffice, and `docx`, `odt`, `pptx`, `pdf` and `html` as pandoc targets. | pandoc for `md`/`markdown` sources, LibreOffice otherwise |
 
 Every conversion tool takes exactly one of `input_b64` (the file as base64) or `path` (a
-file in the calling assistant's workspace), an optional `output_filename`, and
+file in the calling assistant's workspace), an optional `output_filename` (a file
+name, written under `outputs/`; the answer's `path` is the file to attach), and
 `agent_id` and `agent_binding`, which the Cerase gateway fills; the model never
 sets them. Every tool returns `{path, filename, size_bytes}` when the result
 was written into the workspace, or `{filename, size_bytes, contents_base64}`
@@ -64,8 +65,9 @@ a call with both but no `agent_binding` is refused.
 remains for plain technical text, which it typesets with LaTeX. It takes exactly
 one of `input_b64` or `path` (a `.md` file in the workspace), and:
 
-- `output_filename`, default `document.pdf`. A name ending in `.html` returns the
-  HTML page instead of the PDF; a name with neither extension gets `.pdf`.
+- `output_filename`, default `document.pdf`, a file name written under `outputs/`.
+  A name ending in `.html` returns the HTML page instead of the PDF; a name with
+  neither extension gets `.pdf`.
 - `paper`: `A4` (default) or `letter`.
 - `orientation`: `portrait` (default) or `landscape`.
 - `template_css`: CSS added after the built-in stylesheet. A brand sets
